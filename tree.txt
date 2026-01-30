@@ -1,0 +1,56 @@
+personalized-dmf-neurodegeneration
+│
+├── README.md
+├── LICENSE
+├── CITATION.cff
+├── environment
+│   ├── environment.yml
+│   └── requirements.txt
+│
+├── data
+│   ├── README.md
+│   ├── open
+│   │   ├── BOLD
+│   │   │   ├── HCP
+│   │   │   └── RedLat
+│   │   ├── FC
+│   │   └── SC
+│   ├── derived
+│   │   ├── Omat
+│   │   ├── sweeps
+│   │   └── model_features
+│   └── restricted
+│       └── README.md
+│
+├── models
+│   ├── dmf
+│   │   ├── README.md
+│   │   └── external
+│   └── sc_optimization
+│
+├── pipelines
+│   ├── 01_omat
+│   ├── 02_sweeps
+│   ├── 03_global_fit
+│   ├── 04_personalization
+│   ├── 05_feature_extraction
+│   └── 06_statistics
+│
+├── analysis
+│   ├── figures
+│   ├── tables
+│   └── supplementary
+│
+├── notebooks
+│   ├── minimal_pipeline.ipynb
+│   ├── omat_example.ipynb
+│   └── personalization_demo.ipynb
+│
+├── scripts
+│   ├── cluster
+│   └── utils
+│
+└── docs
+    ├── pipeline_overview.md
+    ├── computational_requirements.md
+    └── data_availability.md
