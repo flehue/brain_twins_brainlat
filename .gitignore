@@ -1,0 +1,43 @@
+############################
+# DATA (never commit)
+############################
+
+data/open/BOLD/
+data/restricted/
+data/derived/**/raw/
+
+*.nii
+*.nii.gz
+*.mat
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+############################
+# CLUSTER / LOGS
+############################
+
+slurm-*
+*.out
+*.err
+logs/
+
+############################
+# PYTHON
+############################
+
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+
+############################
+# OS / EDITORS
+############################
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
