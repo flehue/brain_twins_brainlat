@@ -13,6 +13,7 @@ data/derived/**/raw/
 *.hdf5
 *.npy
 *.npz
+*.csv
 
 ############################
 # CLUSTER / LOGS
