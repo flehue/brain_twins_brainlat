@@ -1,0 +1,3 @@
+calculate_BOLD_optimals_cluster.py script should iterate over matrices in the data/derived/Omats_FCs/all_Omats.npz and compare each matrix against the corresponding sweep csv in data/derived/sweeps/sweep_G_target_*-opti_SC_extend, according to their diagnosis (MCI goes with AD)
+
+It should return the global coupling and target parameters per individual, that is needed for the local target optimization later

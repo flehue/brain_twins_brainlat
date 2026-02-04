@@ -1,0 +1,1 @@
+optimize_target_EandI.py takes the global optima of each individual, each Omat, and iteratively updates the local target of each ROI, finally giving the features that we later analyze using pcev

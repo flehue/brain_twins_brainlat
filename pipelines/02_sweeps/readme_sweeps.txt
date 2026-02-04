@@ -1,0 +1,1 @@
+each of these genereates many observables, now being mandatory that they are launched using slurm, and then processed to finally obtain the sweep csvs in data/derived/sweeps/ folder. These are necessary for the global fits

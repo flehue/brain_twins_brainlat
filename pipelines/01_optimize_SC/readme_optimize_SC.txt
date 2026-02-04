@@ -1,0 +1,1 @@
+optimize SC here takes only open FC data (from the data/derived folder), the SCs (data/original/ folder), and the model scripts, and returns the optimized SC matrices to be used by the subsequent pipeline steps
