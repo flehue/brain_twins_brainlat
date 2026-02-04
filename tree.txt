@@ -9,7 +9,7 @@ personalized-dmf-neurodegeneration
 │
 ├── data
 │   ├── README.md
-│   ├── open
+│   ├── open_BOLD
 │   │   ├── BOLD
 │   │   │   ├── HCP
 │   │   │   └── RedLat
