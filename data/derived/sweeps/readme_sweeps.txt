@@ -1,5 +1,3 @@
-big folders, they contain the sweeped (averaged) matrices in csvs
+big folders, they contain the sweeped (averaged) simulated omat matrices in csvs
 
-also the simulated BOLD if we want
-
-can clone from server
+findable in the drive folder

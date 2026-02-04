@@ -1,0 +1,1 @@
+process_functional.py takes BOLD timeseries from the extract_PABLO folder and should save them in the data/derived/all_Omats.csv and data/derived/all_FCs.csv (see the drive)
