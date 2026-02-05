@@ -6,3 +6,8 @@ all_FCs.npz and all_Omats.npz
 
 
 remaining: separate open and closed
+
+NOTE:
+concat.npy is too large for GitHub and may not be present in the repo.
+If it is missing or smaller than expected, contact the repository manager to obtain
+the full file.
