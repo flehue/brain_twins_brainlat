@@ -14,6 +14,11 @@ data/derived/**/raw/
 *.npy
 *.npz
 *.csv
+analysis/figures/
+analysis/tables/
+figures/
+tables_for_paper/
+data/derived/*.backup.csv
 
 ############################
 # CLUSTER / LOGS

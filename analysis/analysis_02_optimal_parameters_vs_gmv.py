@@ -40,10 +40,10 @@ sns.set_palette("husl")
 warnings.filterwarnings('ignore')
 
 # Output directories
-OUTPUT_DIR = Path("tables_for_paper")
-FIGURES_DIR = Path("figures")
-OUTPUT_DIR.mkdir(exist_ok=True)
-FIGURES_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = REPO_ROOT / "analysis" / "tables"
+FIGURES_DIR = REPO_ROOT / "analysis" / "figures"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Plotting parameters
 plt.rcParams['figure.figsize'] = (20, 12)
@@ -121,7 +121,7 @@ for idx, row in df.iterrows():
                     params.append(p)
                     gmv_vals.append(g)
     
-    if len(params) >= 10: # Minimum regions for a stable correlation
+    if len(params) >= 3: # Minimum regions for a stable correlation
         corr, p_val = spearmanr(params, gmv_vals)
         correlation_results.append({
             'N_MEGA': row['N_MEGA'],
