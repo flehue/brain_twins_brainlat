@@ -32,6 +32,7 @@ GROUP_COLS = ["Dataset", "Diagnosis", "Sex", "Age_Range"]
 class Paths:
     repo_root: Path
     data_dir: Path
+    omats_dir: Path
     figures_dir: Path
     tables_dir: Path
     concat_path: Path
@@ -42,12 +43,14 @@ class Paths:
 
 def resolve_paths(repo_root: Path) -> Paths:
     data_dir = repo_root / "data" / "derived"
+    omats_dir = data_dir / "Omats_FCs"
     return Paths(
         repo_root=repo_root,
         data_dir=data_dir,
+        omats_dir=omats_dir,
         figures_dir=repo_root / "analysis" / "figures",
         tables_dir=repo_root / "analysis" / "tables",
-        concat_path=data_dir / "concat.npy",
+        concat_path=omats_dir / "concat.npy",
         metadata_path=data_dir / "metadata.csv",
         personalized_vectors_path=data_dir / "personalized_vectors.npz",
         global_vectors_path=data_dir / "global_vectors.npz",
