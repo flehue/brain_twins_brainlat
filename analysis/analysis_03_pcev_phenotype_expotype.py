@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 from collections import OrderedDict
+import os
 
 import numpy as np
 import pandas as pd
@@ -29,7 +30,7 @@ import pcev_diagnosis as pdg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = REPO_ROOT / "data" / "derived" / "model_output_plus_exposome_data_v2.csv"
-RESULTS_BASE = Path("/data/workspaces/neuromodelling/rherzog/Brainlat/BOLD/pcev_results")
+RESULTS_BASE = Path(os.environ.get("PCEV_RESULTS_DIR", REPO_ROOT / "analysis" / "results" / "pcev_results"))
 
 # Column names
 ID_COL = "N_MEGA"
