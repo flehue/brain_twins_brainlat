@@ -103,14 +103,23 @@ def run_iter(G,target,seed):
     return time,mean_rates,mean_FC,mean_omat
 
 
-Gs = np.linspace(1,2.5,51,endpoint=True)
-targets = np.linspace(2,4,51,endpoint=True)
+def iter_outputs_exist(G, target, seed):
+    bold_path = f"{output_folder}BOLD_per_seed/seed_{seed}/G={G:.3f}_target={target:.3f}_seed={seed}_BOLD.npz"
+    all_path = f"{output_folder}all_per_seed/seed_{seed}/G={G:.3f}_target={target:.3f}_seed={seed}_all.npz"
+    return os.path.exists(bold_path) and os.path.exists(all_path)
+
+
+Gs = np.concatenate([np.round(np.arange(0.5, 1.0, 0.06), 3), np.linspace(1, 4, 51, endpoint=True)])
+targets = np.linspace(2,6,51,endpoint=True)
 nseeds = 25;initial_seed=0
 seeds = range(initial_seed,initial_seed+nseeds)
 sims = list(itertools.product(Gs, targets,seeds))
 
 for sim, (G, target,seed) in enumerate(sims):
     if sim % threads == rank:
+        if iter_outputs_exist(G, target, seed):
+            print(f"SKIP existing output G={G:.3f} target={target:.3f} seed={seed}", flush=True)
+            continue
         
         line = f"{G:.3f}\t{target:.3f}\t{seed}\t"
         

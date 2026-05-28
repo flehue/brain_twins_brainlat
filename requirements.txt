@@ -1,0 +1,33 @@
+# Python dependencies for brain_twins_brainlat
+# Tested with Python 3.13.2 (Ubuntu 22.04.5 LTS). If numba fails to install on
+# your Python version, use Python 3.11 and reinstall.
+#
+# Install with:
+#   pip install --upgrade pip setuptools wheel
+#   pip install -r requirements.txt
+
+# Packaging tools.
+# setuptools is pinned to <81 because that is the last series that still ships the
+# `pkg_resources` module, which some environments/packages expect at runtime. setuptools
+# >=81 removed it, which can surface as "No matching distribution found for pkg_resources".
+setuptools<81
+wheel
+
+# Core analysis stack (versions tested for the demo and analyses)
+numpy==2.4.2
+scipy==1.17.0
+# pandas is pinned below 3.0: pandas 3.0 makes string columns use the new `str`
+# (StringDtype) by default, which statsmodels cannot interpret in the LME formulas used
+# by analysis_04/analysis_05 ("Cannot interpret '<StringDtype>' as a data type").
+# pandas 2.2.x reads the same data with the object dtype that statsmodels expects.
+pandas>=2.2,<3
+matplotlib==3.10.8
+seaborn==0.13.2
+scikit-learn==1.8.0
+statsmodels==0.14.6
+joblib==1.5.3
+
+# Additional dependencies required by simulation/optimization pipelines
+numba>=0.60
+scikit-image>=0.24
+psutil>=5.9

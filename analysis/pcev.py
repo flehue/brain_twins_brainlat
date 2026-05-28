@@ -390,7 +390,6 @@ def pcev_permutation_test(
     rng: Optional[np.random.Generator | int] = None,
     ridge: float = 1e-6,
     n_jobs: int = -1,
-    prefer: str = "threads",
 ) -> Dict[str, Any]:
     """
     Stratified permutation test for the largest root (h^2).
@@ -416,9 +415,6 @@ def pcev_permutation_test(
         Ridge passed to the PCEV fit.
     n_jobs : int
         Parallel workers for joblib. Default uses all cores.
-    prefer : {'threads','processes'}
-        Joblib backend hint.
-
     Returns
     -------
     dict
@@ -461,7 +457,7 @@ def pcev_permutation_test(
         return pcev_fit(Y, Xp, C, ridge=ridge).h2
 
     seeds = rng.integers(0, 2**32 - 1, size=n_perm, dtype=np.uint32)
-    null_h2 = Parallel(n_jobs=n_jobs, prefer=prefer, require="sharedmem")(
+    null_h2 = Parallel(n_jobs=n_jobs, backend="loky")(
         delayed(_one_perm)(int(s)) for s in seeds
     )
     null_h2 = np.asarray(null_h2, float)
@@ -493,7 +489,6 @@ def pcev_infer(
     rng: Optional[np.random.Generator | int] = None,
     ridge: float = 1e-6,
     n_jobs: int = -1,
-    prefer: str = "threads",
 ) -> Dict[str, Any]:
     """
     Convenience wrapper: fit PCEV then compute p-values per chosen inference.
@@ -507,7 +502,7 @@ def pcev_infer(
         - 'approx': Wilks/Rao approximation using all positive roots.
         - 'permutation': stratified permutation p only.
         - 'both': analytic (exact if q=1 else approx) and permutation (requires n_perm>0).
-    n_perm, strat, rng, ridge, n_jobs, prefer
+    n_perm, strat, rng, ridge, n_jobs
         Passed to the relevant functions.
 
     Returns
@@ -536,7 +531,7 @@ def pcev_infer(
         if n_perm <= 0:
             raise ValueError("Permutation inference requested but n_perm <= 0.")
         perm = pcev_permutation_test(
-            Y, X, C, n_perm=n_perm, strat=strat, rng=rng, ridge=ridge, n_jobs=n_jobs, prefer=prefer
+            Y, X, C, n_perm=n_perm, strat=strat, rng=rng, ridge=ridge, n_jobs=n_jobs
         )
         out["p_perm"] = perm["p_perm"]
         out["perm"] = perm
@@ -559,7 +554,6 @@ def _parse_cli():
     ap.add_argument("--seed", type=int, default=None, help="Seed for permutations.")
     ap.add_argument("--ridge", type=float, default=1e-6, help="Ridge for SW.")
     ap.add_argument("--n_jobs", type=int, default=-1, help="joblib workers.")
-    ap.add_argument("--prefer", choices=["threads","processes"], default="threads")
     ap.add_argument("--save_prefix", default="pcev", help="Prefix for saved arrays.")
     args = ap.parse_args()
 
@@ -576,7 +570,6 @@ def _parse_cli():
         rng=args.seed,
         ridge=args.ridge,
         n_jobs=args.n_jobs,
-        prefer=args.prefer,
     )
 
     # Print a compact JSON summary

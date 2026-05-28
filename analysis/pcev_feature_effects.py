@@ -828,8 +828,7 @@ def _run_repeated_cv_generic(
     else:
         outputs = Parallel(
             n_jobs=n_jobs,
-            prefer="threads",
-            require="sharedmem",
+            backend="loky",
             verbose=joblib_verbose,
         )(delayed(_worker)(task) for task in tasks)
 
@@ -1114,8 +1113,7 @@ def run_repeated_cv_with_permutations(
 
         parallel_kwargs = {
             "n_jobs": perm_n_jobs,
-            "prefer": "threads",
-            "require": "sharedmem",
+            "backend": "loky",
             "verbose": joblib_verbose,
         }
         if progress:

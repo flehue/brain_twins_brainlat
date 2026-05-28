@@ -3,11 +3,13 @@
 
 # Auto-converted from Analysis_02_optimal_parameters_vs_GMV.ipynb
 
-from IPython.display import display
 from pathlib import Path
 
+def display(x):
+    print(x)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = REPO_ROOT / 'data' / 'derived' / 'model_output_plus_exposome_data_v2.csv'
+DATA_PATH = REPO_ROOT / 'data' / 'derived' / 'model_output_plus_exposome_data_v3.csv'
 ROI_PATH = REPO_ROOT / 'data' / 'derived' / 'ROI_MNI_V4.csv'
 
 
@@ -57,7 +59,7 @@ plt.rcParams['ps.fonttype'] = 42
 
 # ## 1. Load Data
 #
-# We use a consolidated dataset (`model_output_plus_exposome_data_v2.csv`) containing optimal parameters, exposome variables, and scanner metadata.
+# We use a consolidated dataset (`model_output_plus_exposome_data_v3.csv`) containing optimal parameters, exposome variables, and scanner metadata.
 
 print("Loading data files...")
 
@@ -70,7 +72,7 @@ roi_labels = roi_df['label'].tolist()
 
 # 3. Filter out New Zealand (N=1)
 print(f"Initial shape: {df.shape}")
-df = df[df["Country"] != "New Zealand"].copy()
+df = df[df["Country"] != "New Zeland"].copy()
 print(f"Final shape: {df.shape}")
 
 # ## 2. Structural-Functional Correlation
@@ -155,25 +157,25 @@ def calculate_f2(r_squared):
     """Calculate Cohen's f2 from R-squared."""
     return r_squared / (1 - r_squared) if r_squared < 1 else np.inf
 
-fig = plt.figure(figsize=(25, 10))
-palette = sns.color_palette("Set2", 5)
+fig = plt.figure(figsize=(25, 9))
+palette = ['gray'] * 5
 diagnosis_order = ['CN', 'MCI', 'AD', 'FTD']
 
 # Grid layout
-outer_gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.3)
+outer_gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.28)
 top_gs = gridspec.GridSpecFromSubplotSpec(1, 2, subplot_spec=outer_gs[0], wspace=0.15, width_ratios=[1, 4])
 
 # Panel A: CDF of correlations
 ax1 = fig.add_subplot(top_gs[0, 0])
 sorted_corr = np.sort(merged_df['gmv_param_corr'])
 cdf = np.arange(1, len(sorted_corr) + 1) / len(sorted_corr)
-ax1.plot(sorted_corr, cdf, color='gray', linewidth=3)
+ax1.plot(sorted_corr, cdf, color=palette[0], linewidth=3, label=None)
 ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0f}'.format(y * 100)))
 ax1.set_ylabel('Percentage of Sample', fontsize=20)
-ax1.axvline(merged_df['gmv_param_corr'].mean(), color='red', linestyle='--', linewidth=2, 
+ax1.axvline(merged_df['gmv_param_corr'].mean(), color='red', linestyle='--', linewidth=2,
            label=f'Mean: {merged_df["gmv_param_corr"].mean():.3f}')
 ax1.axvline(0, color='black', linestyle='-', alpha=0.5)
-ax1.set_xlabel('Spearman Correlation (GMV vs. Params)', fontsize=20)
+ax1.set_xlabel('Spearman Correlation', fontsize=20)
 ax1.set_title('Full Sample CDF', fontsize=20, fontweight='bold')
 ax1.legend(fontsize=18, loc='upper left')
 ax1.grid(True, alpha=0.3)
@@ -181,18 +183,20 @@ ax1.tick_params(axis='both', labelsize=18)
 
 # Panel B: Violin plot by diagnosis
 ax2 = fig.add_subplot(top_gs[0, 1])
-sns.violinplot(data=merged_df, x='Diagnosis', y='gmv_param_corr', order=diagnosis_order, 
-               palette=palette[1:], inner=None, ax=ax2, cut=0, linewidth=0, alpha=0.3)
+merged_df['dummy'] = 'A'
+sns.violinplot(data=merged_df, x='Diagnosis', y='gmv_param_corr', hue='dummy',
+               order=diagnosis_order, palette=palette[1:], split=True,
+               inner=None, ax=ax2, cut=0, linewidth=0, alpha=0.3)
+ax2.get_legend().remove()
 
 for i, diag in enumerate(diagnosis_order):
     y_points = merged_df[merged_df['Diagnosis'] == diag]['gmv_param_corr']
     x_jitter = np.random.normal(i + 0.18, 0.04, size=len(y_points))
-    ax2.scatter(x_jitter, y_points, color=palette[i+1], alpha=0.4, s=20, edgecolor='none')
+    ax2.scatter(x_jitter, y_points, color=palette[i+1], alpha=0.3, s=18, zorder=3, edgecolor=None)
 
 ax2.axhline(0, color='black', linestyle='-', alpha=0.5)
 ax2.set_xlabel('Diagnostic Group', fontsize=20)
 ax2.set_ylabel('Spearman Correlation', fontsize=20)
-ax2.set_title('Correlation by Diagnosis', fontsize=20, fontweight='bold')
 ax2.grid(True, alpha=0.3)
 ax2.tick_params(axis='both', labelsize=18)
 
@@ -200,33 +204,52 @@ ax2.tick_params(axis='both', labelsize=18)
 bottom_gs = gridspec.GridSpecFromSubplotSpec(1, 5, subplot_spec=outer_gs[1], wspace=0.2)
 groups = [('All', 'All Subjects')] + [(d, d) for d in diagnosis_order]
 
+# Calculate global axis limits from data
+all_x, all_y = [], []
+for group, _ in groups:
+    d = merged_df if group == 'All' else merged_df[merged_df['Diagnosis'] == group]
+    mask = ~(d['gmv_param_corr'].isna() | d['gof_corr'].isna())
+    all_x.extend(d.loc[mask, 'gmv_param_corr'].tolist())
+    all_y.extend(d.loc[mask, 'gof_corr'].tolist())
+x_range = max(all_x) - min(all_x)
+y_range = max(all_y) - min(all_y)
+global_x_lim = (min(all_x) - 0.05*x_range, max(all_x) + 0.05*x_range)
+global_y_lim = (min(all_y) - 0.05*y_range, max(all_y) + 0.05*y_range)
+
 for i, (group, title) in enumerate(groups):
     ax = fig.add_subplot(bottom_gs[0, i])
     data_sub = merged_df if group == 'All' else merged_df[merged_df['Diagnosis'] == group]
-    
-    if len(data_sub) > 1:
-        x, y = data_sub['gmv_param_corr'], data_sub['gof_corr']
-        xy = np.vstack([x, y])
+    x = data_sub['gmv_param_corr'].values
+    y = data_sub['gof_corr'].values
+    mask = ~(np.isnan(x) | np.isnan(y))
+    x_clean, y_clean = x[mask], y[mask]
+
+    if len(x_clean) > 1:
+        xy = np.vstack([x_clean, y_clean])
         kde = gaussian_kde(xy)(xy)
-        ax.scatter(x, y, c=kde, cmap='gray_r', s=50, alpha=0.8, edgecolors='none')
-        
-        # Regression line
-        z = np.polyfit(x, y, 1)
-        p = np.poly1d(z)
-        ax.plot(np.sort(x), p(np.sort(x)), color='black', linestyle='--', linewidth=2)
-        
-        # Stats
-        rho, p_val = spearmanr(x, y)
-        f2 = calculate_f2(rho**2)
-        ax.legend([f'ρ = {rho:.2f}\n$f^2$ = {f2:.2f}'], loc='lower right', fontsize=16, frameon=True)
-        
+        density_norm = (kde - kde.min()) / (kde.max() - kde.min())
+        colors_kde = plt.cm.gray(density_norm)
+        ax.scatter(x_clean, y_clean, alpha=0.8, s=50, c=colors_kde, edgecolors='none', label=None)
+
+        z = np.polyfit(x_clean, y_clean, 1)
+        p_fit = np.poly1d(z)
+        x_line = np.linspace(global_x_lim[0], global_x_lim[1], 100)
+        ax.plot(x_line, p_fit(x_line), color='black', linestyle='--', linewidth=2)
+
+        rho, p_val = spearmanr(x_clean, y_clean)
+        ax.legend([f'ρ = {rho:.3f}'], loc='lower right', fontsize=18, frameon=True)
+
     ax.set_title(title, fontsize=20, fontweight='bold')
-    ax.set_xlim(-0.4, 0.8)
-    ax.set_ylim(0.2, 1.0)
+    ax.set_xlim(global_x_lim)
+    ax.set_ylim(global_y_lim)
+    ax.set_xticks(np.arange(-0.2, 0.61, 0.2))
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=18)
-    if i == 0: ax.set_ylabel('Goodness of Fit (GOF)', fontsize=20)
-    else: ax.tick_params(labelleft=False)
+    if i == 0:
+        ax.set_ylabel('Goodness of Fit (GOF)', fontsize=20)
+    else:
+        ax.set_ylabel('')
+        ax.tick_params(labelleft=False)
 
 fig.text(0.5, 0.02, 'Gray Matter vs Optimal Parameters Correlation', ha='center', fontsize=20, fontweight='bold')
 plt.savefig(FIGURES_DIR / "publication_structural_functional_relationship.png", dpi=300, bbox_inches='tight')

@@ -1,678 +1,648 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# Final PCEV phenotype analysis (figures + summaries).
-# Converted from Final_PCEV_Analysis_Phenotype.ipynb and adapted to repo paths.
+# LME analysis for age, sex, and diagnosis phenotypes using PCEV scores.
+# Adapted from pcev/pcev_lme_analysis.ipynb; no plotting – outputs CSVs to TABLE_DIR.
 
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = REPO_ROOT / 'data' / 'derived' / 'model_output_plus_exposome_data_v2.csv'
-RESULTS_BASE = Path(os.environ.get('PCEV_RESULTS_DIR', REPO_ROOT / 'analysis' / 'results' / 'pcev_results'))
-TABLES_DIR = REPO_ROOT / 'analysis' / 'tables_for_paper'
-FIG_DIR = REPO_ROOT / 'analysis' / 'figures' / 'analysis_04_lme_phenotypes'
-BRAINPLOT_DIR = Path(os.environ.get('BRAINPLOT_DIR', REPO_ROOT / 'analysis' / 'brainplot'))
-
-TABLES_DIR.mkdir(parents=True, exist_ok=True)
-FIG_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _combo_from_filename(path: Path, suffix: str) -> str:
-    name = path.stem
-    if name.endswith(suffix):
-        return name[: -len(suffix)]
-    return name
-
-
-def build_consolidated_pcev_outputs() -> None:
-    metrics_path = TABLES_DIR / 'pcev_consolidated_metrics_phenotype.csv'
-    scores_path = TABLES_DIR / 'pcev_consolidated_scores_phenotype.csv'
-    if metrics_path.exists() and scores_path.exists():
-        return
-
-    rows_metrics = []
-    rows_scores = []
-
-    age_dir = RESULTS_BASE / 'age_odq_only_no_scanner'
-    for p in age_dir.glob('*_h2_per_repeat.csv'):
-        combo = _combo_from_filename(p, '_h2_per_repeat')
-        df = pd.read_csv(p)
-        for _, r in df.iterrows():
-            rows_metrics.append({'phenotype': 'Age', 'combo': combo, 'repeat': r.get('repeat'), 'value': r.get('h2_with')})
-    for p in age_dir.glob('*_subject_scores.csv'):
-        combo = _combo_from_filename(p, '_subject_scores')
-        df = pd.read_csv(p)
-        for _, r in df.iterrows():
-            rows_scores.append({'phenotype': 'Age', 'combo': combo, 'subject_id': r.get('subject_id'), 'score': r.get('score_with')})
-
-    sex_dir = RESULTS_BASE / 'sex_odq_only_no_scanner'
-    for p in sex_dir.glob('*_metrics_per_repeat.csv'):
-        combo = _combo_from_filename(p, '_metrics_per_repeat')
-        df = pd.read_csv(p)
-        for _, r in df.iterrows():
-            rows_metrics.append({'phenotype': 'Sex', 'combo': combo, 'repeat': r.get('repeat'), 'value': r.get('cohens_d_with')})
-    for p in sex_dir.glob('*_subject_scores.csv'):
-        combo = _combo_from_filename(p, '_subject_scores')
-        df = pd.read_csv(p)
-        for _, r in df.iterrows():
-            rows_scores.append({'phenotype': 'Sex', 'combo': combo, 'subject_id': r.get('subject_id'), 'score': r.get('score_with')})
-
-    diag_dir = RESULTS_BASE / 'diagnosis_odq_only_no_scanner'
-    for p in diag_dir.glob('*_metrics_per_repeat.csv'):
-        combo = _combo_from_filename(p, '_metrics_per_repeat')
-        df = pd.read_csv(p)
-        for _, r in df.iterrows():
-            rows_metrics.append({'phenotype': 'Diagnosis', 'combo': combo, 'repeat': r.get('repeat'), 'value': r.get('epsilon_with')})
-    for p in diag_dir.glob('*_subject_scores.csv'):
-        combo = _combo_from_filename(p, '_subject_scores')
-        df = pd.read_csv(p)
-        for _, r in df.iterrows():
-            rows_scores.append({'phenotype': 'Diagnosis', 'combo': combo, 'subject_id': r.get('subject_id'), 'score': r.get('score_with')})
-
-    pd.DataFrame(rows_metrics).to_csv(metrics_path, index=False)
-    pd.DataFrame(rows_scores).to_csv(scores_path, index=False)
+from time import perf_counter
+from typing import Dict
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import seaborn as sns
-from pathlib import Path
-from scipy.stats import gaussian_kde
-import sys
-import warnings
-import brainspace.plotting.base as bs_base
-from surfplot import Plot
-from neuromaps.datasets import fetch_fslr
-import nbformat
-import nibabel as nb
-import vtk
+import statsmodels.formula.api as smf
+from scipy.stats import chi2
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
-# --- CONFIGURATION ---
-plt.rcParams['text.usetex'] = False
-plt.rcParams['svg.fonttype'] = 'none'
-plt.rcParams['pdf.fonttype'] = 42
-plt.rcParams['ps.fonttype'] = 42
+warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
-KDE_BANDWIDTH = None
-TEXTBOX_X = 0.95
-TEXTBOX_Y = 0.95
-STAR_FONTSIZE = 30
-STAR_COLOR = 'red'
-VIOLIN_COLORS = ["#555757", '#555757']
-FONT_TITLE = 18
-FONT_LABEL = 18
-FONT_TICK = 16
-FIGSIZE = (24, 12)
-WSPACE = 0.25
-HSPACE = 0.4
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
 
-FIG_DIR = REPO_ROOT / 'analysis' / 'figures' / 'analysis_04_lme_phenotypes'
-FIG_DIR.mkdir(parents=True, exist_ok=True)
+REPO_ROOT   = Path(__file__).resolve().parents[1]
+DATA_PATH   = REPO_ROOT / 'data' / 'derived' / 'model_output_plus_exposome_data_v3.csv'
+RESULTS_BASE = Path(os.environ.get('PCEV_RESULTS_DIR',
+                    REPO_ROOT / 'analysis' / 'results' / 'pcev_results'))
+TABLE_DIR   = REPO_ROOT / 'analysis' / 'tables_for_paper'
+TABLE_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- HELPER FUNCTIONS ---
+AXIS_DIRS = {
+    'age':       RESULTS_BASE / 'age_odq_only_no_scanner',
+    'sex':       RESULTS_BASE / 'sex_odq_only_no_scanner',
+    'diagnosis': RESULTS_BASE / 'diagnosis_odq_only_no_scanner',
+}
 
-def parse_combo_label(label):
-    if label == 'all_features':
-        return None
-    single_features = ['EI_ent', 'EI_rate', 'rate_I', 'FC', 'FCD', 'metastability']
-    if label in single_features:
-        return [label]
-    for feat1 in single_features:
-        for feat2 in single_features:
-            if label == f"{feat1}_{feat2}" or label == f"{feat2}_{feat1}":
-                return sorted([feat1, feat2])
-    parts = label.split('_')
-    if len(parts) == 4:
-        return sorted([f"{parts[0]}_{parts[1]}", f"{parts[2]}_{parts[3]}"])
-    elif len(parts) == 3:
-        if f"{parts[0]}_{parts[1]}" in single_features:
-            return sorted([f"{parts[0]}_{parts[1]}", parts[2]])
-        elif f"{parts[1]}_{parts[2]}" in single_features:
-            return sorted([parts[0], f"{parts[1]}_{parts[2]}"])
-    return [label]
+COVARIATE_RENAME = {
+    'N_MEGA':    'subject_id',
+    'Age':       'age',
+    'Sex':       'sex',
+    'Diagnosis': 'diagnosis',
+    'Country':   'country',
+    'gof_corr':  'gof_corr',
+    'ODQ_fMRI':  'ODQ_fMRI',
+    'resonador': 'resonador',
+}
+COVARIATE_COLS = list(COVARIATE_RENAME.keys())
+ALLOWED_AXES   = tuple(AXIS_DIRS.keys())
 
-def build_matrix(df, metric_col):
-    combos = [c for c in df['combo'].unique() if c != 'all_features']
-    combo_groups = {}
-    for c in combos:
-        groups = parse_combo_label(c)
-        if groups:
-            combo_groups[c] = groups
-    all_groups = set()
-    for groups in combo_groups.values():
-        all_groups.update(groups)
-    groups_sorted = sorted(all_groups)
-    matrix = pd.DataFrame(np.nan, index=groups_sorted, columns=groups_sorted)
-    for combo, groups in combo_groups.items():
-        avg_val = df[df['combo'] == combo][metric_col].mean()
-        if len(groups) == 1:
-            g = groups[0]
-            matrix.loc[g, g] = avg_val
-        elif len(groups) == 2:
-            g1, g2 = groups
-            matrix.loc[g1, g2] = avg_val
-            matrix.loc[g2, g1] = avg_val
-    return matrix
+MIN_COUNTRY_SIZE = 1
+SEX_NORMALISE_MAP = {'M': 'M', 'MALE': 'M', 'F': 'F', 'FEMALE': 'F'}
 
-def combo_to_filename(combo_label):
-    return combo_label.replace('+', '_')
+# ---------------------------------------------------------------------------
+# 1. Discover best combos per axis from all_combos_summary.csv
+# ---------------------------------------------------------------------------
 
-def create_heatmap(ax, matrix, title, max_idx=None, show_xticklabels=True):
-    sns.heatmap(
-        matrix,
-        annot=False,
-        cmap='gray_r',
-        ax=ax,
-        cbar=True,
-        square=True,
-        cbar_kws={'shrink': 0.8}
+ANALYSIS_COMBOS: Dict[str, Dict[str, str]] = {}
+for axis, axis_dir in AXIS_DIRS.items():
+    summary = pd.read_csv(axis_dir / 'all_combos_summary.csv')
+    non_all = summary[summary['combo_label'] != 'all_features'].copy()
+    best_label = non_all.sort_values('h2_with_mean', ascending=False).iloc[0]['combo_label']
+    # convert '+' separator to '_' to match score filenames
+    best_file_key = best_label.replace('+', '_')
+    ANALYSIS_COMBOS[axis] = {
+        'all_features': 'all_features',
+        'best_combo':   best_file_key,
+    }
+
+print('Analysis combos:')
+for axis, mapping in ANALYSIS_COMBOS.items():
+    print(f'  {axis}: {mapping}')
+
+# ---------------------------------------------------------------------------
+# 2. Load subject scores
+# ---------------------------------------------------------------------------
+
+score_frames = []
+for axis, axis_dir in AXIS_DIRS.items():
+    for combo_label, file_key in ANALYSIS_COMBOS[axis].items():
+        t0 = perf_counter()
+        score_file = axis_dir / f'{file_key}_subject_scores.csv'
+        df = pd.read_csv(score_file).rename(columns={'score_with': 'score'})
+        df['subject_id'] = df['subject_id'].astype(str).str.strip()
+        df['score']      = pd.to_numeric(df['score'], errors='coerce')
+        df['combo_key']   = file_key
+        df['combo_label'] = combo_label
+        df['axis']        = axis
+        df = df.dropna(subset=['score'])
+        score_frames.append(df)
+        print(f'[{axis}|{combo_label}] {len(df):,} rows in {perf_counter()-t0:.2f}s')
+
+RAW_SCORES_DF = pd.concat(score_frames, ignore_index=True)
+print(f'\nTotal score rows: {RAW_SCORES_DF.shape[0]:,}')
+print(RAW_SCORES_DF.groupby(['axis', 'combo_label'])
+      .agg(n_subjects=('subject_id', 'nunique')).to_string())
+
+# ---------------------------------------------------------------------------
+# 3. Load covariates
+# ---------------------------------------------------------------------------
+
+COVARIATES_DF = (
+    pd.read_csv(
+        DATA_PATH,
+        usecols=COVARIATE_COLS,
+        dtype={'N_MEGA': str},
+        low_memory=False,
     )
-    cbar = ax.collections[0].colorbar
-    cbar.ax.tick_params(labelsize=FONT_TICK+4)
-    vmin, vmax = cbar.vmin, cbar.vmax
-    cbar.set_ticks([vmin, vmax])
-    cbar.set_ticklabels([f'{vmin:.2f}', f'{vmax:.2f}'])
-    
-    ax.set_title(title, fontweight='bold', fontsize=FONT_TITLE)
-    ax.set_xlabel('')
-    ax.set_ylabel('')
-    
-    if show_xticklabels:
-        xlabels = [label.get_text().replace('_', ' ') for label in ax.get_xticklabels()]
-        ax.set_xticklabels(xlabels, rotation=45, ha='right', fontsize=FONT_TICK+2)
-    else:
-        ax.set_xticklabels([])
-    
-    ylabels = [label.get_text().replace('_', ' ') for label in ax.get_yticklabels()]
-    ax.set_yticklabels(ylabels, rotation=0, fontsize=FONT_TICK+2)
-    ax.tick_params(axis='both', which='both', length=0)
-    
-    if max_idx is not None:
-        ax.text(
-            max_idx[1] + 0.5,
-            max_idx[0] + 0.5,
-            '★',
-            ha='center',
-            va='center',
-            fontsize=STAR_FONTSIZE,
-            color=STAR_COLOR,
-            fontweight='bold'
+    .rename(columns=COVARIATE_RENAME)
+    .drop_duplicates('subject_id')
+    .reset_index(drop=True)
+)
+COVARIATES_DF = COVARIATES_DF[~COVARIATES_DF['country'].str.strip().str.lower().eq('new zeland')]
+print(f'\nCovariates shape: {COVARIATES_DF.shape}')
+
+# ---------------------------------------------------------------------------
+# 4. Utility functions (identical logic to pcev_lme_analysis.ipynb)
+# ---------------------------------------------------------------------------
+
+def zscore(series: pd.Series) -> pd.Series:
+    values = series.astype(float)
+    mean, std = values.mean(), values.std(ddof=0)
+    if std == 0 or np.isnan(std):
+        return pd.Series(np.zeros(len(values)), index=series.index)
+    return (values - mean) / std
+
+
+def build_subject_dataset(axis: str, combo_key: str) -> pd.DataFrame:
+    subset = RAW_SCORES_DF.loc[
+        (RAW_SCORES_DF['axis'] == axis) & (RAW_SCORES_DF['combo_key'] == combo_key)
+    ].copy()
+
+    # Aggregate per subject (handles both per-repeat and pre-averaged files)
+    subject_scores = (
+        subset.groupby('subject_id', as_index=False)
+        .agg(mean_score=('score', 'mean'), repeats_seen=('score', 'count'))
+    )
+
+    merged = subject_scores.merge(COVARIATES_DF, on='subject_id', how='left')
+    merged = merged.dropna(subset=['age', 'sex', 'diagnosis', 'country', 'gof_corr'])
+
+    merged['sex'] = (
+        merged['sex'].astype(str).str.strip().str.upper().map(SEX_NORMALISE_MAP)
+    )
+    merged = merged[merged['sex'].isin(['M', 'F'])]
+    merged['diagnosis'] = merged['diagnosis'].astype(str).str.strip().str.upper()
+    merged = merged.dropna(subset=['diagnosis'])
+
+    merged['score_z']   = zscore(merged['mean_score'])
+    merged['age_z']     = zscore(merged['age'])
+    merged['gof_corr_z'] = zscore(merged['gof_corr'])
+
+    country_counts  = merged['country'].value_counts()
+    valid_countries = country_counts.index[country_counts >= MIN_COUNTRY_SIZE]
+    filtered = merged.loc[merged['country'].isin(valid_countries)].copy()
+
+    if filtered.empty:
+        raise ValueError(
+            f'No data after country filter (min {MIN_COUNTRY_SIZE}) '
+            f'for axis={axis}, combo={combo_key}'
         )
 
-# --- BRAIN PLOTTING HELPERS ---
-
-# VTK Patch
-def _patch_vtk_mro_for_vtkname():
-    probe = vtk.vtkPolyData()
-    for cls in probe.__class__.mro():
-        if cls is object:
-            continue
-        if not hasattr(cls, "__vtkname__"):
-            nm = cls.__name__
-            if not nm.startswith("vtk"):
-                nm = f"vtk{nm}"
-            cls.__vtkname__ = nm
-_patch_vtk_mro_for_vtkname()
-
-def patched_to_numpy(self, transparent_bg=True, scale=None):
-    wf = self._win2img(transparent_bg, scale)
-    img = bs_base.get_output(wf)
-    dims = None
-    if hasattr(img, "GetDimensions"):
-        try: dims = img.GetDimensions()
-        except Exception: dims = None
-    if dims is None and hasattr(img, "dimensions"):
-        d = img.dimensions
-        if isinstance(d, tuple): dims = d
-        elif callable(d): dims = d()
-        else: dims = d
-    dims = tuple(dims)
-    shape = dims[::-1][1:] + (-1,)
-    scalars = img.PointData['ImageScalars']
-    if hasattr(scalars, "to_array"): scalars = scalars.to_array()
-    scalars = np.asarray(scalars)
-    return scalars.reshape(shape)[::-1]
-bs_base.Plotter.to_numpy = patched_to_numpy
-
-def remove_excluded_regions(vec):
-    mask = np.ones(90, dtype=bool)
-    mask[70:78] = False
-    return np.array(vec)[mask]
-
-def plot_brain_map(mapp, name, vmin=-0.3, vmax=0.3, cmap='seismic', savefile=None):
-    # Determine Labels Path relative to Notebook
-    base_path = BRAINPLOT_DIR
-    lh_labels_gii = nb.load(base_path / 'brainplot' / 'AAL.32k.L.label.gii')
-    lh_labels = lh_labels_gii.darrays[0].data.astype(int)
-    rh_labels_gii = nb.load(base_path / 'brainplot' / 'AAL.32k.R.label.gii')
-    rh_labels = rh_labels_gii.darrays[0].data.astype(int)
-    
-    Ds_left = mapp[::2]
-    Ds_right = mapp[1::2]
-    
-    lh_vertex_data = np.zeros_like(lh_labels, dtype=float)
-    for i in range(41):
-        lh_vertex_data[lh_labels == i+1] = Ds_left[i]
-    rh_vertex_data = np.zeros_like(rh_labels, dtype=float)
-    for i in range(41):
-        rh_vertex_data[rh_labels == i+1] = Ds_right[i]
-        
-    surfaces = fetch_fslr()
-    lh, rh = surfaces['inflated']
-    p = Plot(lh, rh, size=(1000, 800), layout='grid', zoom=1.5)
-    p.add_layer({'left': lh_vertex_data, 'right': rh_vertex_data},
-                cmap=cmap, cbar=False, color_range=(vmin, vmax))
-    fig = p.build()
-    fig.patch.set_alpha(0)
-    if savefile:
-        fig.savefig(savefile, dpi=200, transparent=True)
-    return fig
-
-def crop_image_auto(img, bg_threshold=10):
-    mask = (img > bg_threshold).any(axis=2) & (img < 255-bg_threshold).any(axis=2)
-    if not mask.any(): return img
-    rows = np.where(mask.any(axis=1))[0]
-    cols = np.where(mask.any(axis=0))[0]
-    if len(rows) == 0 or len(cols) == 0: return img
-    return img[rows[0]:rows[-1]+100, cols[0]:cols[-1]+500, :]
-
-# --- DATA LOADING & PREPARATION ---
-
-build_consolidated_pcev_outputs()
-
-print("Loading data...")
-main_df = pd.read_csv(DATA_PATH, low_memory=False)
-metrics_df = pd.read_csv(TABLES_DIR / 'pcev_consolidated_metrics_phenotype.csv')
-scores_df = pd.read_csv(TABLES_DIR / 'pcev_consolidated_scores_phenotype.csv')
-
-# Prepare Phenotype Dataframes (recreate age_df, sex_df, diag_df)
-age_df = metrics_df[metrics_df['phenotype'] == 'Age'].copy()
-age_df['h2_with'] = age_df['value']  # Map 'value' back to 'h2_with'
-
-sex_df = metrics_df[metrics_df['phenotype'] == 'Sex'].copy()
-sex_df['cohens_d_with'] = sex_df['value'] # Map back
-
-diag_df = metrics_df[metrics_df['phenotype'] == 'Diagnosis'].copy()
-diag_df['epsilon_with'] = diag_df['value'] # Map back
-
-# Build Matrices
-print("Building matrices...")
-age_matrix = build_matrix(age_df, 'h2_with')
-sex_matrix = build_matrix(sex_df, 'cohens_d_with').abs()
-diag_matrix = build_matrix(diag_df, 'epsilon_with')
-
-# Find Best Combos
-age_best_idx = np.unravel_index(np.nanargmax(age_matrix.values), age_matrix.shape)
-sex_best_idx = np.unravel_index(np.nanargmax(sex_matrix.values), sex_matrix.shape)
-diag_best_idx = np.unravel_index(np.nanargmax(diag_matrix.values), diag_matrix.shape)
-
-age_best_combo = 'EI_ent+rate_I' # Verified match
-sex_best_combo = 'rate_I'        # Verified match
-
-# Logic from original for Diagnosis best combo
-if diag_matrix.index[diag_best_idx[0]] == diag_matrix.columns[diag_best_idx[1]]:
-    diag_best_combo = diag_matrix.index[diag_best_idx[0]]
-else:
-    diag_best_combo = f"{diag_matrix.index[diag_best_idx[0]]}+{diag_matrix.columns[diag_best_idx[1]]}"
-
-print(f"Best Combos:\n Age={age_best_combo}\n Sex={sex_best_combo}\n Diag={diag_best_combo}")
-
-# Prepare Specific Data for Plots (Best vs All)
-# Age
-age_best_h2 = age_df[age_df['combo'] == combo_to_filename(age_best_combo)].copy()
-age_all_h2 = age_df[age_df['combo'] == 'all_features'].copy()
-
-# Sex
-sex_best_metrics = sex_df[sex_df['combo'] == combo_to_filename(sex_best_combo)].copy()
-sex_all_metrics = sex_df[sex_df['combo'] == 'all_features'].copy()
-
-# Diagnosis
-diag_best_metrics = diag_df[diag_df['combo'] == combo_to_filename(diag_best_combo)].copy()
-diag_all_metrics = diag_df[diag_df['combo'] == 'all_features'].copy()
-
-# Prepare Scores (Subject Averages)
-def prepare_scores_avg(pheno, combo, groupby_cols):
-    subset = scores_df[(scores_df['phenotype'] == pheno) & (scores_df['combo'] == combo_to_filename(combo))].copy()
-    subset['score_with'] = subset['score']
-    # Merge with Main DF metadata
-    # NOTE: Original used N_MEGA for main_df, subject_id for scores
-    merged = subset.merge(main_df[['N_MEGA'] + groupby_cols], left_on='subject_id', right_on='N_MEGA', how='inner')
-    merged = merged.drop(columns=['N_MEGA'])
-    avg = merged.groupby(['subject_id'] + groupby_cols, as_index=False)['score_with'].mean()
-    return avg
-
-age_best_scores_avg = prepare_scores_avg('Age', age_best_combo, ['Age'])
-sex_best_scores_avg = prepare_scores_avg('Sex', sex_best_combo, ['Sex'])
-diag_all_scores_avg = prepare_scores_avg('Diagnosis', 'all_features', ['Diagnosis']) # Uses 'all_features'
-
-# VIP Calculation Helpers
-vip_feature_groups = ['rate_E', 'rate_I', 'EI_rate','ent_E', 'ent_I', 'EI_ent']
-feature_cols_by_group = {
-    g: [c for c in main_df.columns if c.startswith(f"{g}_")] for g in vip_feature_groups
-}
-all_feature_cols = sorted({c for cols in feature_cols_by_group.values() for c in cols})
-
-def compute_vip(score_df, score_col, feature_cols_by_group, main_df, label):
-    score_df = score_df[['subject_id', score_col]].dropna().copy()
-    # Ensure we have N_MEGA in main_df for merging
-    merged = score_df.merge(
-        main_df[['N_MEGA'] + all_feature_cols],
-        left_on='subject_id', right_on='N_MEGA', how='inner'
+    filtered['sex'] = pd.Categorical(filtered['sex'], categories=['M', 'F'], ordered=False)
+    diag_categories = ['CN'] + [c for c in filtered['diagnosis'].unique() if c != 'CN']
+    filtered['diagnosis'] = pd.Categorical(
+        filtered['diagnosis'], categories=diag_categories, ordered=False
     )
-    if merged.empty:
-        raise ValueError(f"No overlap between {label} scores and main data")
-    results = []
-    for group, cols in feature_cols_by_group.items():
-        corrs = merged[cols].apply(lambda col: col.corr(merged[score_col]))
-        group_df = pd.DataFrame({
-            'feature_group': group,
-            'feature': cols,
-            'vip': corrs.values,
-            'phenotype': label
-        })
-        results.append(group_df)
-    return pd.concat(results, ignore_index=True)
+    filtered['country']   = filtered['country'].astype('category')
+    filtered['axis']      = axis
+    filtered['combo_key'] = combo_key
 
-# Compute VIPs now to be ready for plotting
-print("Computing VIP Scores...")
-age_vip_df = compute_vip(age_best_scores_avg, 'score_with', feature_cols_by_group, main_df, 'Age')
-sex_vip_df = compute_vip(sex_best_scores_avg, 'score_with', feature_cols_by_group, main_df, 'Sex')
-diag_vip_df = compute_vip(diag_all_scores_avg, 'score_with', feature_cols_by_group, main_df, 'Diagnosis')
-print("Data Preparation Complete.")
+    filtered.attrs['country_filter'] = {
+        'min_country_size':   MIN_COUNTRY_SIZE,
+        'countries_before':   int(country_counts.size),
+        'countries_after':    int(len(valid_countries)),
+        'countries_dropped':  sorted(set(country_counts.index) - set(valid_countries)),
+    }
+    return filtered
 
-# --- FIGURE 1: PERFORMANCE & DISTRIBUTIONS ---
-print("Generating Figure 1...")
-fig = plt.figure(figsize=FIGSIZE)
-gs = gridspec.GridSpec(3, 3, figure=fig, wspace=WSPACE, hspace=HSPACE)
 
-# ========== ROW 1: AGE ==========
-ax_age_heat = fig.add_subplot(gs[0, 0])
-create_heatmap(ax_age_heat, age_matrix, 'Age: h²', max_idx=age_best_idx, show_xticklabels=False)
+BASELINE_FORMULAS = {
+    'age':       'score_z ~ age_z + sex + diagnosis + gof_corr_z',
+    'sex':       'score_z ~ sex + age_z + diagnosis + gof_corr_z',
+    'diagnosis': 'score_z ~ diagnosis + age_z + sex + gof_corr_z',
+}
 
-# Age violin
-ax_age_viol = fig.add_subplot(gs[0, 1])
-age_viol_data = pd.DataFrame({
-    'h2': pd.concat([age_best_h2['h2_with'], age_all_h2['h2_with']]),
-    'combo': [age_best_combo]*len(age_best_h2) + ['all_features']*len(age_all_h2),
-    'x': [0]*len(age_best_h2) + [0]*len(age_all_h2)
-})
-sns.violinplot(data=age_viol_data, x='x', y='h2', hue='combo', ax=ax_age_viol, 
-               palette=VIOLIN_COLORS, inner='box', split=True, legend=False,
-               linewidth=0, alpha=0.3, cut=0)
-sns.stripplot(data=age_viol_data, x='x', y='h2', hue='combo', ax=ax_age_viol,
-              palette=VIOLIN_COLORS, size=6, alpha=0.8, dodge=True, legend=False,
-              linewidth=0, edgecolor='none')
-age_best_label = age_best_combo.replace('_', ' ').replace('+', ' + ')
-handles = [plt.Line2D([0], [0], color=VIOLIN_COLORS[0], lw=4, label=age_best_label),
-           plt.Line2D([0], [0], color=VIOLIN_COLORS[1], lw=4, label='All Features')]
-ax_age_viol.legend(handles=handles, loc='center left', fontsize=FONT_TICK+1)
-ax_age_viol.set_title('Age: h² Comparison', fontsize=FONT_TITLE)
-ax_age_viol.set_xlabel('')
-ax_age_viol.set_ylabel('h²', fontsize=FONT_LABEL+2)
-ax_age_viol.set_xticks([])
-ymin, ymax = ax_age_viol.get_ylim()
-yticks = np.linspace(ymin, ymax, 4)
-ax_age_viol.set_yticks(yticks)
-ax_age_viol.set_yticklabels([f'{y:.2f}' for y in yticks])
-ax_age_viol.tick_params(labelsize=FONT_TICK+4)
-ax_age_viol.yaxis.grid(True, alpha=0.3)
+MODERATION_FORMULAS = {
+    'age':       'score_z ~ age_z * sex + age_z * diagnosis + gof_corr_z',
+    'sex':       'score_z ~ sex * age_z + sex * diagnosis + gof_corr_z',
+    'diagnosis': 'score_z ~ diagnosis * age_z + diagnosis * sex + gof_corr_z',
+}
 
-# Age PCEV distribution
-ax_age_dist = fig.add_subplot(gs[0, 2])
-xy = age_best_scores_avg[['Age', 'score_with']].dropna().values.T
-if KDE_BANDWIDTH:
-    kde = gaussian_kde(xy, bw_method=KDE_BANDWIDTH)
-else:
-    kde = gaussian_kde(xy)
-density = kde(xy)
-density_normalized = (density - density.min()) / (density.max() - density.min())
-scatter = ax_age_dist.scatter(xy[0], xy[1], c=density_normalized, s=20, cmap='flare_r', alpha=0.6)
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-divider = make_axes_locatable(ax_age_dist)
-cax = divider.append_axes("right", size="5%", pad=0.1)
-cbar = plt.colorbar(scatter, cax=cax, alpha=1.0)
-cbar.solids.set_alpha(1.0)
-cbar.set_label('Density', fontsize=FONT_LABEL+3)
-cbar.ax.tick_params(labelsize=FONT_TICK+3)
-z = np.polyfit(xy[0], xy[1], 1)
-p = np.poly1d(z)
-x_line = np.linspace(xy[0].min(), xy[0].max(), 100)
-ax_age_dist.plot(x_line, p(x_line), 'k-', linewidth=2, alpha=0.8)
-ax_age_dist.set_xlabel('Age', fontsize=FONT_LABEL)
-ax_age_dist.set_ylabel('PCEV Score', fontsize=FONT_LABEL)
-ax_age_dist.set_title('Age: PCEV Distribution', fontsize=FONT_TITLE)
-ax_age_dist.set_yticks([-5, 0, 5])
-ax_age_dist.set_yticklabels(['-5.0', '0.0', '5.0'])
-ax_age_dist.tick_params(labelsize=FONT_TICK+4)
-ax_age_dist.yaxis.grid(True, alpha=0.3)
-ax_age_dist.xaxis.grid(True, alpha=0.3)
-age_h2_mean = age_best_h2['h2_with'].mean()
-age_h2_std = age_best_h2['h2_with'].std()
-age_best_combo_hr = age_best_combo.replace('_', ' ').replace('+', ' + ')
-age_text = f"Best: {age_best_combo_hr}\nh² = {age_h2_mean:.3f}±{age_h2_std:.3f}"
-ax_age_dist.text(0.05, 0.95, age_text, transform=ax_age_dist.transAxes,
-                 fontsize=13, verticalalignment='top', horizontalalignment='left',
-                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray'))
 
-# ========== ROW 2: SEX ==========
-ax_sex_heat = fig.add_subplot(gs[1, 0])
-create_heatmap(ax_sex_heat, sex_matrix, 'Sex: |Cohen\'s d|', max_idx=sex_best_idx, show_xticklabels=False)
+def fit_mixed_model(
+    data: pd.DataFrame,
+    formula: str,
+    *,
+    reml: bool = False,
+    group_col: str = 'country',
+    re_formula: str | None = '1',
+):
+    model = smf.mixedlm(
+        formula, data=data, groups=data[group_col], re_formula=re_formula
+    )
+    return model.fit(reml=reml)
 
-# Sex violin
-ax_sex_viol = fig.add_subplot(gs[1, 1])
-sex_viol_data = pd.DataFrame({
-    'cohens_d': pd.concat([sex_best_metrics['cohens_d_with'].abs(), sex_all_metrics['cohens_d_with'].abs()]),
-    'combo': [sex_best_combo]*len(sex_best_metrics) + ['all_features']*len(sex_all_metrics),
-    'x': [0]*len(sex_best_metrics) + [0]*len(sex_all_metrics)
-})
-sns.violinplot(data=sex_viol_data, x='x', y='cohens_d', hue='combo', ax=ax_sex_viol,
-               palette=VIOLIN_COLORS, inner='box', split=True, legend=False,
-               linewidth=0, alpha=0.3, cut=0)
-sns.stripplot(data=sex_viol_data, x='x', y='cohens_d', hue='combo', ax=ax_sex_viol,
-              palette=VIOLIN_COLORS, size=6, alpha=0.8, dodge=True, legend=False,
-              linewidth=0, edgecolor='none')
-sex_best_label = sex_best_combo.replace('_', ' ')
-handles = [plt.Line2D([0], [0], color=VIOLIN_COLORS[0], lw=4, label=sex_best_label),
-           plt.Line2D([0], [0], color=VIOLIN_COLORS[1], lw=4, label='All Features')]
-ax_sex_viol.legend(handles=handles, loc='center left', fontsize=FONT_TICK+1)
-ax_sex_viol.set_title('Sex: |Cohen\'s d| Comparison', fontsize=FONT_TITLE)
-ax_sex_viol.set_xlabel('')
-ax_sex_viol.set_ylabel('|Cohen\'s d|', fontsize=FONT_LABEL+2)
-ax_sex_viol.set_xticks([])
-ymin, ymax = ax_sex_viol.get_ylim()
-yticks = np.linspace(ymin, ymax, 4)
-ax_sex_viol.set_yticks(yticks)
-ax_sex_viol.set_yticklabels([f'{y:.2f}' for y in yticks])
-ax_sex_viol.tick_params(labelsize=FONT_TICK+4)
-ax_sex_viol.yaxis.grid(True, alpha=0.3)
 
-# Sex PCEV distribution
-ax_sex_dist = fig.add_subplot(gs[1, 2])
-sns.violinplot(data=sex_best_scores_avg, x='Sex', y='score_with', hue='Sex', ax=ax_sex_dist,
-               palette=['lightblue', 'lightcoral'], inner='box', legend=False,
-               split=False, cut=0, linewidth=0)
-for collection in ax_sex_dist.collections:
-    if hasattr(collection, 'get_paths'):
-        for path in collection.get_paths():
-            vertices = path.vertices
-            center_x = vertices[:, 0].mean()
-            mask = vertices[:, 0] <= center_x
-            vertices[~mask, 0] = center_x
-for i, sex in enumerate(['Female', 'Male']):
-    sex_data = sex_best_scores_avg[sex_best_scores_avg['Sex'] == sex]['score_with']
-    x_pos = np.random.normal(i + 0.25, 0.05, size=len(sex_data))
-    ax_sex_dist.scatter(x_pos, sex_data, c='black', s=20, alpha=0.4, 
-                       edgecolors='none', linewidths=0, zorder=3)
-ax_sex_dist.set_title('Sex: PCEV by Sex', fontsize=FONT_TITLE)
-ax_sex_dist.set_xlabel('Sex', fontsize=FONT_LABEL)
-ax_sex_dist.set_ylabel('PCEV Score', fontsize=FONT_LABEL)
-ax_sex_dist.tick_params(labelsize=FONT_TICK+4)
-ax_sex_dist.yaxis.grid(True, alpha=0.3)
-sex_d_mean = sex_best_metrics['cohens_d_with'].mean()
-sex_d_std = sex_best_metrics['cohens_d_with'].std()
-sex_best_combo_hr = sex_best_combo.replace('_', ' ').replace('+', ' + ')
-sex_text = f"Best: {sex_best_combo_hr}\nd = {sex_d_mean:.3f}±{sex_d_std:.3f}"
-ax_sex_dist.text(0.05, 0.95, sex_text, transform=ax_sex_dist.transAxes,
-                 fontsize=13, verticalalignment='top', horizontalalignment='left',
-                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray'))
+def compare_models(baseline_result, moderation_result) -> dict:
+    lr_stat = 2 * (moderation_result.llf - baseline_result.llf)
+    df_diff = len(moderation_result.params) - len(baseline_result.params)
+    return {
+        'lr_statistic':    lr_stat,
+        'df':              df_diff,
+        'p_value':         chi2.sf(lr_stat, df_diff),
+        'aic_baseline':    baseline_result.aic,
+        'aic_moderation':  moderation_result.aic,
+        'bic_baseline':    baseline_result.bic,
+        'bic_moderation':  moderation_result.bic,
+    }
 
-# ========== ROW 3: DIAGNOSIS ==========
-ax_diag_heat = fig.add_subplot(gs[2, 0])
-create_heatmap(ax_diag_heat, diag_matrix, 'Diagnosis: ε²', max_idx=diag_best_idx, show_xticklabels=True)
 
-# Diagnosis violin
-ax_diag_viol = fig.add_subplot(gs[2, 1])
-diag_viol_data = pd.DataFrame({
-    'epsilon': pd.concat([diag_best_metrics['epsilon_with'], diag_all_metrics['epsilon_with']]),
-    'combo': [diag_best_combo]*len(diag_best_metrics) + ['all_features']*len(diag_all_metrics),
-    'x': [0]*len(diag_best_metrics) + [0]*len(diag_all_metrics)
-})
-sns.violinplot(data=diag_viol_data, x='x', y='epsilon', hue='combo', ax=ax_diag_viol,
-               palette=VIOLIN_COLORS, inner='box', split=True, legend=False,
-               linewidth=0, alpha=0.3, cut=0)
-sns.stripplot(data=diag_viol_data, x='x', y='epsilon', hue='combo', ax=ax_diag_viol,
-              palette=VIOLIN_COLORS, size=6, alpha=0.8, dodge=True, legend=False,
-              linewidth=0, edgecolor='none')
-diag_best_label = diag_best_combo.replace('_', ' ').replace('+', ' + ')
-handles = [plt.Line2D([0], [0], color=VIOLIN_COLORS[0], lw=4, label=diag_best_label),
-           plt.Line2D([0], [0], color=VIOLIN_COLORS[1], lw=4, label='All Features')]
-ax_diag_viol.legend(handles=handles, loc='center left', fontsize=FONT_TICK+1)
-ax_diag_viol.set_title('Diagnosis: ε² Comparison', fontsize=FONT_TITLE)
-ax_diag_viol.set_xlabel('')
-ax_diag_viol.set_ylabel('ε²', fontsize=FONT_LABEL+2)
-ax_diag_viol.set_xticks([])
-ymin, ymax = ax_diag_viol.get_ylim()
-yticks = np.linspace(ymin, ymax, 4)
-ax_diag_viol.set_yticks(yticks)
-ax_diag_viol.set_yticklabels([f'{y:.2f}' for y in yticks])
-ax_diag_viol.tick_params(labelsize=FONT_TICK+4)
-ax_diag_viol.yaxis.grid(True, alpha=0.3)
+def tidy_fixed_effects(result) -> pd.DataFrame:
+    return pd.DataFrame({
+        'term':      result.fe_params.index,
+        'estimate':  result.fe_params.values,
+        'std_error': result.bse_fe.values,
+        'z_value':   result.fe_params.values / result.bse_fe.values,
+        'p_value':   result.pvalues[result.fe_params.index],
+    }).reset_index(drop=True)
 
-# Diagnosis PCEV distribution
-ax_diag_dist = fig.add_subplot(gs[2, 2])
-diag_order = ['CN', 'MCI', 'AD', 'FTD']
-diag_all_scores_ordered = diag_all_scores_avg[diag_all_scores_avg['Diagnosis'].isin(diag_order)]
-import matplotlib.colors as mcolors
-set2_colors = plt.cm.Set2.colors[1:5]
-sns.violinplot(data=diag_all_scores_ordered, x='Diagnosis', y='score_with', hue='Diagnosis',
-               order=diag_order, ax=ax_diag_dist, palette=set2_colors, inner='box', 
-               legend=False, cut=0, linewidth=0)
-for collection in ax_diag_dist.collections:
-    if hasattr(collection, 'get_paths'):
-        for path in collection.get_paths():
-            vertices = path.vertices
-            center_x = vertices[:, 0].mean()
-            mask = vertices[:, 0] <= center_x
-            vertices[~mask, 0] = center_x
-for i, diag in enumerate(diag_order):
-    diag_data = diag_all_scores_ordered[diag_all_scores_ordered['Diagnosis'] == diag]['score_with']
-    x_pos = np.random.normal(i + 0.25, 0.05, size=len(diag_data))
-    ax_diag_dist.scatter(x_pos, diag_data, c='black', s=20, alpha=0.4, 
-                        edgecolors='none', linewidths=0, zorder=3)
-ax_diag_dist.set_title('Diagnosis: PCEV by Diagnosis', fontsize=FONT_TITLE)
-ax_diag_dist.set_xlabel('Diagnosis', fontsize=FONT_LABEL)
-ax_diag_dist.set_ylabel('PCEV Score', fontsize=FONT_LABEL)
-ax_diag_dist.set_yticks([-10, 0, 10, 20])
-ax_diag_dist.set_yticklabels(['-10', '0', '10', '20'])
-ax_diag_dist.tick_params(labelsize=FONT_TICK+4)
-ax_diag_dist.yaxis.grid(True, alpha=0.3)
-diag_eps_mean = diag_all_metrics['epsilon_with'].mean()
-diag_eps_std = diag_all_metrics['epsilon_with'].std()
-diag_text = f"All Features\nε² = {diag_eps_mean:.3f}±{diag_eps_std:.3f}"
-ax_diag_dist.text(0.05, 0.95, diag_text, transform=ax_diag_dist.transAxes,
-                  fontsize=13, verticalalignment='top', horizontalalignment='left',
-                  bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray'))
 
-fig.savefig(FIG_DIR / 'pcev_odq_phenotype_figure.pdf', dpi=300, bbox_inches='tight')
-fig.savefig(FIG_DIR / 'pcev_odq_phenotype_figure.svg', dpi=300, bbox_inches='tight')
-plt.show()
-print("Figure 1 Saved.")
+def model_diagnostics(result) -> dict:
+    re_var    = float(result.cov_re.iloc[0, 0]) if result.cov_re.size else np.nan
+    resid_var = float(result.scale)
+    total     = re_var + resid_var
+    icc       = re_var / total if total > 0 else np.nan
+    retvals   = getattr(result, 'mle_retvals', {})
+    converged = bool(retvals.get('converged', getattr(result, 'converged', True)))
+    return {
+        'log_likelihood':       float(result.llf),
+        'aic':                  float(result.aic),
+        'bic':                  float(result.bic),
+        'random_intercept_var': re_var,
+        'residual_var':         resid_var,
+        'icc':                  icc,
+        'converged':            converged,
+    }
 
-# --- FIGURE 2: BRAIN MAPS (VIP SCORES) ---
-print("Generating Figure 2...")
 
-try:
-    # Grid Plotting
-    vip_feature_groups_grid = ['rate_E', 'EI_rate', 'ent_E', 'EI_ent']
-    phenotypes = [
-        ("Age", age_vip_df),
-        ("Sex", sex_vip_df),
-        ("Diagnosis", diag_vip_df),
-    ]
+def model_based_effect_sizes(result) -> pd.DataFrame:
+    nobs    = int(getattr(result, 'nobs', getattr(result.model, 'nobs', 0)))
+    nparams = len(result.params)
+    df_resid = max(1, nobs - nparams)
+    rows = []
+    for term in result.fe_params.index:
+        coef = float(result.fe_params[term])
+        se   = float(result.bse_fe[term])
+        t    = coef / se if se > 0 else np.nan
+        r_partial = t / np.sqrt(t**2 + df_resid) if not np.isnan(t) else np.nan
+        d_from_r  = (
+            (2 * r_partial) / np.sqrt(1 - r_partial**2)
+            if (not np.isnan(r_partial) and abs(r_partial) < 1) else np.nan
+        )
+        rows.append({'term': term, 'coef': coef, 'std_err': se,
+                     't': t, 'r_partial': r_partial, 'd_from_r': d_from_r})
+    return pd.DataFrame(rows)
 
-    nrows = len(phenotypes)
-    ncols = len(vip_feature_groups_grid)
-    BRAIN_VIP_FIGSIZE = (18, 9)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=BRAIN_VIP_FIGSIZE)
-    # Adjust layout manually to remove spacing
-    plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+def fit_mixed_model_with_retry(
+    data: pd.DataFrame,
+    formula: str,
+    *,
+    reml: bool = False,
+    group_col: str = 'country',
+    re_formula: str | None = '1',
+    vc_formula=None,
+):
+    model = smf.mixedlm(
+        formula, data=data, groups=data[group_col], re_formula=re_formula,
+        vc_formula=vc_formula,
+    )
+    last_fit = None
+    last_err = None
+    for method, maxiter in [('lbfgs', 500), ('powell', 1000)]:
+        try:
+            fit = model.fit(reml=reml, method=method, maxiter=maxiter)
+            last_fit = fit
+            if getattr(fit, 'converged', True):
+                return fit
+        except Exception as err:
+            last_err = err
+    if last_fit is not None:
+        return last_fit
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError(f'Unable to fit model: {formula}')
 
-    vip_vmin = -0.35
-    vip_vmax = 0.35
-    vip_cmap = 'RdBu_r'
 
-    for row, (pheno_name, vip_df) in enumerate(phenotypes):
-        for col, group in enumerate(vip_feature_groups_grid):
-            ax = axes[row, col]
-            # Extract VIP vector for this group
-            # Sort by feature suffix to ensure correct brain mapping (1..90)
-            vip_vec = (
-                vip_df[vip_df['feature_group'] == group]
-                .sort_values('feature', key=lambda x: x.str.extract(r'_(\d+)$').astype(int)[0])
-                .vip.values
-            )
-            # Remove excluded regions (downsample from 90 to 82)
-            vip_vec_82 = remove_excluded_regions(vip_vec)
-            
-            # Plot transparent brain map
-            brain_fig = plot_brain_map(vip_vec_82, name=f"{pheno_name}{group}", 
-                                    vmin=vip_vmin, vmax=vip_vmax, cmap=vip_cmap, savefile=None)
-            
-            # Convert to image for grid display
-            brain_fig.canvas.draw()
-            buf = brain_fig.canvas.buffer_rgba()
-            img = np.asarray(buf).reshape(brain_fig.canvas.get_width_height()[::-1] + (4,))
-            img = img[..., :3]  # drop alpha
-            
-            # Crop whitespace
-            img_cropped = crop_image_auto(img)
-            
-            ax.imshow(img_cropped)
-            plt.close(brain_fig) # Cleanup offscreen figure
-            ax.axis('off')
-            
-            if row == 0:
-                ax.set_title(group.replace('_', ' '), fontsize=15)
-        
-        # Add Phenotype Label on the left
-        axes[row, 0].text(-0.05, 0.5, pheno_name, 
-                        va='center', ha='center', fontsize=18, rotation=90, 
-                        transform=axes[row, 0].transAxes, fontweight='bold')
+def nested_variance_components(result) -> dict:
+    var_country = float(result.cov_re.iloc[0, 0]) if result.cov_re.size else 0.0
+    var_scanner = 0.0
+    if hasattr(result, 'vcomp') and hasattr(result.model, 'exog_vc'):
+        for name, val in zip(result.model.exog_vc.names, result.vcomp):
+            if 'scanner' in str(name).lower():
+                var_scanner = float(val)
+                break
+    resid = float(result.scale)
+    total = var_country + var_scanner + resid
+    return {
+        'var_country':  var_country,
+        'var_scanner':   var_scanner,
+        'var_resid':     resid,
+        'icc_country':   var_country / total if total > 0 else np.nan,
+        'icc_scanner':   var_scanner / total if total > 0 else np.nan,
+    }
 
-    # Add Colorbar at bottom
-    from matplotlib.colors import Normalize
-    import matplotlib.cm as cm
-    cbar_ax = fig.add_axes([0.2, -0.04, 0.6, 0.04])
-    norm = Normalize(vmin=vip_vmin, vmax=vip_vmax)
-    sm = cm.ScalarMappable(cmap=vip_cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax, orientation='horizontal')
-    cbar.set_label('VIP', fontsize=16, labelpad=10)
-    cbar.ax.tick_params(labelsize=14)
 
-    fig.savefig(FIG_DIR / 'brain_vip_grid_E.pdf', dpi=300, bbox_inches='tight', transparent=True)
-    fig.savefig(FIG_DIR / 'brain_vip_grid_E.svg', dpi=300, bbox_inches='tight', transparent=True)
-    plt.show()
-    print("Figure 2 Saved.")
+def build_unified_odq_dataset(axis: str, combo_key: str) -> pd.DataFrame:
+    subset = RAW_SCORES_DF.loc[
+        (RAW_SCORES_DF['axis'] == axis) & (RAW_SCORES_DF['combo_key'] == combo_key)
+    ].copy()
 
-except ImportError as e:
-    print(f"Skipping Figure 2 due to missing library: {e}")
-except Exception as e:
-    print(f"Error generating Figure 2: {e}")
-    import traceback
-    traceback.print_exc()
+    subject_scores = (
+        subset.groupby('subject_id', as_index=False)
+        .agg(mean_score=('score', 'mean'), repeats_seen=('score', 'count'))
+    )
+
+    merged = subject_scores.merge(COVARIATES_DF, on='subject_id', how='left')
+    merged = merged.dropna(subset=['age', 'sex', 'diagnosis', 'country', 'gof_corr',
+                                   'ODQ_fMRI', 'resonador'])
+
+    merged['sex'] = (
+        merged['sex'].astype(str).str.strip().str.upper().map(SEX_NORMALISE_MAP)
+    )
+    merged = merged[merged['sex'].isin(['M', 'F'])]
+    merged['diagnosis'] = merged['diagnosis'].astype(str).str.strip().str.upper()
+    merged = merged[merged['diagnosis'].isin(['CN', 'AD', 'FTD', 'MCI'])].copy()
+
+    merged['score_z'] = zscore(merged['mean_score'])
+    merged['Age_z']   = zscore(merged['age'])
+    merged['ODQ_z']   = zscore(pd.to_numeric(merged['ODQ_fMRI'], errors='coerce'))
+    merged['GOF_z']   = zscore(merged['gof_corr'])
+    merged['Sex_male'] = (merged['sex'] == 'M').astype(float)
+
+    dx_dummies = pd.get_dummies(merged['diagnosis'], prefix='Dx')
+    for col in ['Dx_AD', 'Dx_FTD', 'Dx_MCI']:
+        if col not in dx_dummies.columns:
+            dx_dummies[col] = 0.0
+    merged = pd.concat(
+        [merged, dx_dummies[['Dx_AD', 'Dx_FTD', 'Dx_MCI']].astype(float)],
+        axis=1,
+    )
+
+    merged['scanner_country'] = (
+        merged['country'].astype(str).str.strip() + '::' +
+        merged['resonador'].astype(str).str.strip()
+    )
+    merged['country'] = merged['country'].astype('category')
+    merged['scanner_country'] = merged['scanner_country'].astype('category')
+    merged.attrs['nested_meta'] = {
+        'n_country': int(merged['country'].nunique()),
+        'n_scanner': int(merged['scanner_country'].nunique()),
+    }
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# 5. Run LME for all axes and combos
+# ---------------------------------------------------------------------------
+
+LME_RESULTS: Dict[str, Dict[str, dict]] = {}
+
+for axis in ALLOWED_AXES:
+    LME_RESULTS[axis] = {}
+    for combo_label, combo_key in ANALYSIS_COMBOS[axis].items():
+        print(f'\n{"="*60}')
+        print(f'{axis.upper()} | {combo_label}')
+        print('='*60)
+
+        ds   = build_subject_dataset(axis, combo_key)
+        meta = ds.attrs.get('country_filter', {})
+        print(f'N subjects: {ds.shape[0]} | Countries: {meta.get("countries_after", 0)}')
+
+        baseline_model   = fit_mixed_model(ds, BASELINE_FORMULAS[axis])
+        moderation_model = fit_mixed_model(ds, MODERATION_FORMULAS[axis])
+        comparison       = compare_models(baseline_model, moderation_model)
+
+        tidy_base = tidy_fixed_effects(baseline_model)
+        tidy_mod  = tidy_fixed_effects(moderation_model)
+        diag_base = model_diagnostics(baseline_model)
+        diag_mod  = model_diagnostics(moderation_model)
+        es_base   = model_based_effect_sizes(baseline_model)
+        es_mod    = model_based_effect_sizes(moderation_model)
+
+        LME_RESULTS[axis][combo_label] = {
+            'dataset':                    ds,
+            'baseline_model':             baseline_model,
+            'moderation_model':           moderation_model,
+            'fixed_effects_baseline':     tidy_base,
+            'fixed_effects_moderation':   tidy_mod,
+            'diagnostics_baseline':       diag_base,
+            'diagnostics_moderation':     diag_mod,
+            'model_comparison':           comparison,
+            'effect_sizes_baseline':      es_base,
+            'effect_sizes_moderation':    es_mod,
+            'country_meta':               meta,
+        }
+
+        sig = ('***' if comparison['p_value'] < 0.001 else
+               '**'  if comparison['p_value'] < 0.01  else
+               '*'   if comparison['p_value'] < 0.05  else 'ns')
+        print(f'LR χ²({comparison["df"]}) = {comparison["lr_statistic"]:.2f}, '
+              f'p = {comparison["p_value"]:.4f} {sig}  |  '
+              f'ΔAIC = {comparison["aic_moderation"] - comparison["aic_baseline"]:+.1f}')
+        print(f'ICC (moderation): {diag_mod["icc"]:.4f} | '
+              f'Converged: {diag_mod["converged"]}')
+
+# ---------------------------------------------------------------------------
+# 6. Consolidated output tables
+# ---------------------------------------------------------------------------
+
+fixed_effects_baseline_rows  = []
+fixed_effects_moderation_rows = []
+model_comparison_rows        = []
+diagnostics_rows             = []
+effect_sizes_rows            = []
+
+for axis in ALLOWED_AXES:
+    for combo_label, payload in LME_RESULTS[axis].items():
+        fe_base = payload['fixed_effects_baseline'].copy()
+        fe_base.insert(0, 'model',       'baseline')
+        fe_base.insert(0, 'combo_label', combo_label)
+        fe_base.insert(0, 'axis',        axis)
+        fixed_effects_baseline_rows.append(fe_base)
+
+        fe_mod = payload['fixed_effects_moderation'].copy()
+        fe_mod.insert(0, 'model',       'moderation')
+        fe_mod.insert(0, 'combo_label', combo_label)
+        fe_mod.insert(0, 'axis',        axis)
+        fixed_effects_moderation_rows.append(fe_mod)
+
+        comp = payload['model_comparison'].copy()
+        comp.update({'axis': axis, 'combo_label': combo_label})
+        model_comparison_rows.append(comp)
+
+        for model_tag, diag_dict in [('baseline',   payload['diagnostics_baseline']),
+                                      ('moderation', payload['diagnostics_moderation'])]:
+            row = diag_dict.copy()
+            row.update({'axis': axis, 'combo_label': combo_label, 'model': model_tag})
+            diagnostics_rows.append(row)
+
+        es_mod = payload['effect_sizes_moderation'].copy()
+        es_mod.insert(0, 'combo_label', combo_label)
+        es_mod.insert(0, 'axis',        axis)
+        effect_sizes_rows.append(es_mod)
+
+fixed_effects_all  = pd.concat(
+    fixed_effects_baseline_rows + fixed_effects_moderation_rows, ignore_index=True
+)
+model_comparisons  = pd.DataFrame(model_comparison_rows)[
+    ['axis', 'combo_label', 'lr_statistic', 'df', 'p_value',
+     'aic_baseline', 'aic_moderation', 'bic_baseline', 'bic_moderation']
+]
+diagnostics_all    = pd.DataFrame(diagnostics_rows)[
+    ['axis', 'combo_label', 'model', 'log_likelihood', 'aic', 'bic',
+     'random_intercept_var', 'residual_var', 'icc', 'converged']
+]
+effect_sizes_all   = pd.concat(effect_sizes_rows, ignore_index=True)
+
+key_patterns = ['sex\\[T\\.F\\]', 'diagnosis\\[T\\.(AD|MCI|FTD)\\]', ':', 'age_z']
+effect_sizes_key = effect_sizes_all[
+    effect_sizes_all['term'].str.contains('|'.join(key_patterns), regex=True)
+]
+
+# Save
+model_comparisons.to_csv( TABLE_DIR / 'lme_phenotypes_model_comparisons.csv',   index=False)
+diagnostics_all.to_csv(   TABLE_DIR / 'lme_phenotypes_diagnostics.csv',          index=False)
+fixed_effects_all.to_csv( TABLE_DIR / 'lme_phenotypes_fixed_effects.csv',        index=False)
+effect_sizes_all.to_csv(  TABLE_DIR / 'lme_phenotypes_effect_sizes_all.csv',     index=False)
+effect_sizes_key.to_csv(  TABLE_DIR / 'lme_phenotypes_effect_sizes_key.csv',     index=False)
+
+print(f'\n{"="*60}')
+print(f'All tables saved to: {TABLE_DIR}')
+print(f'  lme_phenotypes_model_comparisons.csv  ({len(model_comparisons)} rows)')
+print(f'  lme_phenotypes_diagnostics.csv         ({len(diagnostics_all)} rows)')
+print(f'  lme_phenotypes_fixed_effects.csv       ({len(fixed_effects_all)} rows)')
+print(f'  lme_phenotypes_effect_sizes_all.csv    ({len(effect_sizes_all)} rows)')
+print(f'  lme_phenotypes_effect_sizes_key.csv    ({len(effect_sizes_key)} rows)')
+
+# ---------------------------------------------------------------------------
+# 6b. Unified ODQ nested table
+# ---------------------------------------------------------------------------
+
+UNIFIED_FORMULA = 'score_z ~ Age_z + Sex_male + ODQ_z + GOF_z + Dx_AD + Dx_FTD + Dx_MCI'
+UNIFIED_TERM_ORDER = {
+    'age': ['Age_z', 'Sex_male', 'ODQ_z', 'GOF_z', 'Dx_AD', 'Dx_FTD', 'Dx_MCI'],
+    'sex': ['Sex_male', 'Age_z', 'ODQ_z', 'GOF_z', 'Dx_AD', 'Dx_FTD', 'Dx_MCI'],
+    'diagnosis': ['Dx_AD', 'Dx_FTD', 'Dx_MCI', 'Age_z', 'Sex_male', 'ODQ_z', 'GOF_z'],
+}
+UNIFIED_WHICH = {
+    'all_features': 'all_features',
+    'best_combo':    'best',
+}
+
+unified_rows = []
+for axis in ALLOWED_AXES:
+    for combo_label, combo_key in ANALYSIS_COMBOS[axis].items():
+        ds = build_unified_odq_dataset(axis, combo_key)
+        meta = ds.attrs.get('nested_meta', {})
+        fit = fit_mixed_model_with_retry(
+            ds,
+            UNIFIED_FORMULA,
+            reml=False,
+            group_col='country',
+            vc_formula={'scanner': '0 + C(scanner_country)'},
+        )
+        var_info = nested_variance_components(fit)
+        ci = fit.conf_int()
+
+        for term in UNIFIED_TERM_ORDER[axis]:
+            term_ci = ci.loc[term]
+            unified_rows.append({
+                'phenotype': axis,
+                'combo': combo_key,
+                'which': UNIFIED_WHICH[combo_label],
+                'n': int(ds.shape[0]),
+                'n_country': int(meta.get('n_country', ds['country'].nunique())),
+                'n_scanner': int(meta.get('n_scanner', ds['scanner_country'].nunique())),
+                'var_country': var_info['var_country'],
+                'var_scanner': var_info['var_scanner'],
+                'var_resid': var_info['var_resid'],
+                'icc_country': var_info['icc_country'],
+                'icc_scanner': var_info['icc_scanner'],
+                'param': term,
+                'term': term,
+                'beta': float(fit.fe_params[term]),
+                'se': float(fit.bse_fe[term]),
+                'z': float(fit.fe_params[term] / fit.bse_fe[term]),
+                'p': float(fit.pvalues[term]),
+                'ci_low': float(term_ci.iloc[0]),
+                'ci_high': float(term_ci.iloc[1]),
+            })
+
+unified_odq_nested = pd.DataFrame(unified_rows)[[
+    'phenotype', 'combo', 'which', 'n', 'n_country', 'n_scanner',
+    'var_country', 'var_scanner', 'var_resid', 'icc_country', 'icc_scanner',
+    'param', 'term', 'beta', 'se', 'z', 'p', 'ci_low', 'ci_high',
+]]
+unified_csv = TABLE_DIR / 'lme_phenotypes_unified_odq_nested.csv'
+unified_odq_nested.to_csv(unified_csv, index=False)
+print(f'  lme_phenotypes_unified_odq_nested.csv ({len(unified_odq_nested)} rows)')
+
+# ---------------------------------------------------------------------------
+# 7. Literal numeric summary  (printed to stdout and saved to TABLE_DIR)
+# ---------------------------------------------------------------------------
+
+import io as _io
+
+_summary_buf = _io.StringIO()
+
+def _p(line=''):
+    print(line)
+    _summary_buf.write(line + '\n')
+
+_p('\n' + '='*80)
+_p('PCEV LME ANALYSIS: LITERAL NUMERIC SUMMARY')
+_p('='*80)
+
+_p('\n1. SAMPLE SIZES')
+_p('-'*40)
+for axis in ALLOWED_AXES:
+    for combo_label, payload in LME_RESULTS[axis].items():
+        ds   = payload['dataset']
+        meta = payload['country_meta']
+        _p(f'{axis.upper():10s} | {combo_label:15s} | N={ds.shape[0]:5d} subjects | '
+           f'Countries={meta.get("countries_after", 0):2d} | '
+           f'Median repeats={ds["repeats_seen"].median():.0f}')
+
+_p('\n2. MODEL COMPARISONS (Baseline vs Moderation)')
+_p('-'*40)
+for _, row in model_comparisons.iterrows():
+    sig = ('***' if row['p_value'] < 0.001 else
+           '**'  if row['p_value'] < 0.01  else
+           '*'   if row['p_value'] < 0.05  else 'ns')
+    delta_aic = row['aic_moderation'] - row['aic_baseline']
+    delta_bic = row['bic_moderation'] - row['bic_baseline']
+    _p(f'{row["axis"].upper():10s} | {row["combo_label"]:15s} | '
+       f'LR χ²({row["df"]:.0f})={row["lr_statistic"]:6.2f}, '
+       f'p={row["p_value"]:.4f} {sig:3s} | '
+       f'ΔAIC={delta_aic:+6.1f} | ΔBIC={delta_bic:+6.1f}')
+    _p('           → ' + ('Prefer MODERATION model' if row['p_value'] < 0.05
+                          else 'Prefer BASELINE model'))
+
+_p('\n3. VARIANCE COMPONENTS & ICC')
+_p('-'*40)
+for _, row in diagnostics_all.iterrows():
+    _p(f'{row["axis"].upper():10s} | {row["combo_label"]:15s} | {row["model"]:10s} | '
+       f'τ²={row["random_intercept_var"]:7.4f} | '
+       f'σ²={row["residual_var"]:7.4f} | '
+       f'ICC={row["icc"]:6.4f} | '
+       f'Converged={"YES" if row["converged"] else "NO"}')
+
+_p('\n4. KEY EFFECT SIZES (Moderation Model)')
+_p('-'*40)
+for axis in ALLOWED_AXES:
+    _p(f'\n{axis.upper()} AXIS:')
+    for combo_label, payload in LME_RESULTS[axis].items():
+        _p(f'\n  {combo_label}:')
+        es = payload['effect_sizes_moderation']
+        if axis == 'age':
+            key_main  = ['sex[T.F]', 'diagnosis[T.AD]', 'diagnosis[T.MCI]', 'diagnosis[T.FTD]']
+            key_inter = ['age_z:sex[T.F]', 'age_z:diagnosis[T.AD]',
+                         'age_z:diagnosis[T.MCI]', 'age_z:diagnosis[T.FTD]']
+        elif axis == 'sex':
+            key_main  = ['sex[T.F]', 'diagnosis[T.AD]', 'diagnosis[T.MCI]', 'diagnosis[T.FTD]']
+            key_inter = ['sex[T.F]:age_z', 'sex[T.F]:diagnosis[T.AD]',
+                         'sex[T.F]:diagnosis[T.MCI]', 'sex[T.F]:diagnosis[T.FTD]']
+        else:
+            key_main  = ['diagnosis[T.AD]', 'diagnosis[T.MCI]', 'diagnosis[T.FTD]', 'sex[T.F]']
+            key_inter = ['diagnosis[T.AD]:age_z', 'diagnosis[T.MCI]:age_z',
+                         'diagnosis[T.FTD]:age_z', 'diagnosis[T.AD]:sex[T.F]',
+                         'diagnosis[T.MCI]:sex[T.F]', 'diagnosis[T.FTD]:sex[T.F]']
+        _p('    Main effects:')
+        for term in key_main:
+            r = es[es['term'] == term]
+            if not r.empty:
+                r = r.iloc[0]
+                _p(f'      {term:30s}: coef={r["coef"]:+7.4f}, '
+                   f't={r["t"]:+7.3f}, r={r["r_partial"]:+6.3f}, '
+                   f'd={r["d_from_r"]:+7.4f}')
+        _p('    Interactions:')
+        for term in key_inter:
+            r = es[es['term'] == term]
+            if not r.empty:
+                r = r.iloc[0]
+                _p(f'      {term:30s}: coef={r["coef"]:+7.4f}, '
+                   f't={r["t"]:+7.3f}, r={r["r_partial"]:+6.3f}, '
+                   f'd={r["d_from_r"]:+7.4f}')
+
+_p('\n' + '='*80)
+_p('END OF SUMMARY')
+_p('='*80)
+
+summary_txt = TABLE_DIR / 'lme_phenotypes_numeric_summary.txt'
+summary_txt.write_text(_summary_buf.getvalue(), encoding='utf-8')
+print(f'  lme_phenotypes_numeric_summary.txt    (written)')

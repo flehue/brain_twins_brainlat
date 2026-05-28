@@ -29,7 +29,8 @@ Tested analysis environment:
 - Python `3.13.2`
 - numpy `2.4.2`
 - scipy `1.17.0`
-- pandas `3.0.0`
+- pandas `>=2.2,<3` (pandas 3.0 changes the default string dtype and breaks the
+  statsmodels LME models in `analysis_04`/`analysis_05`; see `requirements.txt`)
 - matplotlib `3.10.8`
 - seaborn `0.13.2`
 - scikit-learn `1.8.0`
@@ -54,20 +55,38 @@ Additional dependencies required by simulation/optimization pipelines:
 
 ## 2. Installation Guide
 
+### Recommended Python version
+
+- **Python 3.13.2** is the tested version (Ubuntu 22.04.5 LTS).
+- If `numba` fails to install/build on your Python version, use **Python 3.11** and reinstall.
+
 ### Instructions
 
-From the repository root:
+From the repository root, create an isolated environment and install the pinned dependencies
+from `requirements.txt`.
+
+Using `venv` (standard library):
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
-pip install \
-  numpy==2.4.2 scipy==1.17.0 pandas==3.0.0 \
-  matplotlib==3.10.8 seaborn==0.13.2 \
-  scikit-learn==1.8.0 statsmodels==0.14.6 joblib==1.5.3 \
-  numba scikit-image psutil
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
 ```
+
+Or using `conda`:
+
+```bash
+conda create -y -n brainlat python=3.13
+conda activate brainlat
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+```
+
+> **Note:** `requirements.txt` pins the tested versions and includes `setuptools<81`. setuptools
+> provides the `pkg_resources` module that some environments/packages expect at runtime; setuptools
+> `>=81` removed it, which can surface as `No matching distribution found for pkg_resources`. The
+> pin avoids that environment-specific error.
 
 For scripts that import local modules (`model/`, `support_scripts/`, `analysis/`), set:
 
@@ -75,15 +94,13 @@ For scripts that import local modules (`model/`, `support_scripts/`, `analysis/`
 export PYTHONPATH="$PWD/model:$PWD/support_scripts:$PWD/analysis:$PYTHONPATH"
 ```
 
-If `numba` installation fails on your Python version, use Python 3.11 and reinstall.
-
 ### Typical Install Time
 
 - On a normal desktop computer: approximately `5-15 minutes` (depends on network and whether wheels are prebuilt).
 
 ## 3. Demo
 
-This demo runs PCEV on included repository data (`data/derived/model_output_plus_exposome_data_v2.csv`).
+This demo runs PCEV on included repository data (`data/derived/model_output_plus_exposome_data_v3.csv`).
 
 ### Instructions to Run on Data
 
@@ -96,7 +113,7 @@ mkdir -p analysis/results
 import pandas as pd
 import numpy as np
 
-src = 'data/derived/model_output_plus_exposome_data_v2.csv'
+src = 'data/derived/model_output_plus_exposome_data_v3.csv'
 df = pd.read_csv(src, usecols=['ent_E_0','ent_E_1','ent_E_2','Age','gof_corr','Sex'])
 df = df.dropna()
 df = df[df['Sex'].isin(['Male', 'Female'])].copy()
@@ -116,6 +133,11 @@ PY
   --inference approx \
   --save_prefix analysis/results/pcev_demo
 ```
+
+> **Platform note (timing command):** `/usr/bin/time -f 'elapsed=%E'` is Linux-specific.
+> On macOS the `-f` flag is not supported; use `/usr/bin/time -l` (BSD `time`), or install GNU
+> coreutils (`brew install coreutils`) and use `gtime -f 'elapsed=%E'`. Alternatively, just drop
+> the `/usr/bin/time ...` prefix and run the `./.venv/bin/python analysis/pcev.py ...` command directly.
 
 ### Expected Output
 
@@ -196,7 +218,7 @@ Additional notes from repository documentation:
 
 - `pipelines/00_omat_FC_from_BOLD/process_functional.py` generates functional derivatives (e.g., FC/Omat outputs under `data/derived/`).
 - Sweeps are stored under `data/derived/sweeps/`.
-- `data/derived/model_output_plus_exposome_data_v2.csv` is the merged analysis-ready table used by phenotype/expotype analyses.
+- `data/derived/model_output_plus_exposome_data_v3.csv` is the merged analysis-ready table used by phenotype/expotype analyses.
 - Some large artifacts (e.g., `concat.npy`) may be unavailable in lightweight clones; coordinate with the repository manager if needed.
 
 ### How to Run the Software on Your Data
@@ -234,7 +256,7 @@ python pipelines/04_regional_fit/optimize_target_EandI.py
 python pipelines/04_regional_fit/optimize_target_EandI_unmatched.py --help
 ```
 
-7. Assemble your final analysis table (same schema as `data/derived/model_output_plus_exposome_data_v2.csv`) and run:
+7. Assemble your final analysis table (same schema as `data/derived/model_output_plus_exposome_data_v3.csv`) and run:
 
 ```bash
 python analysis/analysis_03_pcev_phenotype_expotype.py

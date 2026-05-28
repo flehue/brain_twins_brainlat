@@ -16,9 +16,47 @@ data/derived/**/raw/
 *.csv
 analysis/figures/
 analysis/tables/
+analysis/results/*
+notebooks/
 figures/
 tables_for_paper/
 data/derived/*.backup.csv
+
+# --- Data files that ARE versioned (tracked despite the broad patterns above) ---
+# Listed explicitly to document intent and so a fresh clone keeps them.
+!data/derived/model_output_plus_exposome_data_v3.csv
+!data/derived/Omats_FCs/concat.npy
+!data/derived/personalized_vectors.npz
+!data/derived/global_vectors.npz
+!data/derived/metadata.csv
+!data/derived/ROI_MNI_V4.csv
+!pipelines/00_omat_FC_from_BOLD/timeseries_paths.csv
+
+# Keep the README that documents the (otherwise ignored) outputs layout
+!analysis/results/README.md
+
+# --- Scratch / utility scripts that should not be tracked ---
+data/derived/collapse_data.py
+**/tmp_*
+
+# Internal onboarding note (references scratch files; not part of the public repo)
+analysis/permutations_onboarding.md
+
+# Builder that depends on external (non-distributed) spreadsheets
+analysis/build_individual_exposome_odq_table.py
+
+# Cluster-specific job runners/submitters and job-tracking lists
+analysis/run_analysis_*.sh
+analysis/submit_analysis_*.sh
+pipelines/**/run_sweep_*.sh
+pipelines/**/submit_sweep_*.sh
+support_scripts/run_rawSC_*.sh
+support_scripts/runny*.sh
+support_scripts/rawSC_rerun_*.txt
+support_scripts/rawSC_rerun_rows_*.txt
+
+# Generated summary plots checked into pipelines/
+pipelines/**/*.png
 
 ############################
 # CLUSTER / LOGS
@@ -27,6 +65,7 @@ data/derived/*.backup.csv
 slurm-*
 *.out
 *.err
+*.log
 logs/
 
 ############################

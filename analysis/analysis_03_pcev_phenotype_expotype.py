@@ -29,7 +29,7 @@ import pcev_diagnosis as pdg
 # =============================================================================
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = REPO_ROOT / "data" / "derived" / "model_output_plus_exposome_data_v2.csv"
+DATA_PATH = REPO_ROOT / "data" / "derived" / "model_output_plus_exposome_data_v3.csv"
 RESULTS_BASE = Path(os.environ.get("PCEV_RESULTS_DIR", REPO_ROOT / "analysis" / "results" / "pcev_results"))
 
 # Column names
@@ -42,10 +42,10 @@ AGE_COL = "Age"
 ODQ_COL = "ODQ_fMRI"
 
 # CV parameters
-N_REPEATS = 100
-N_SPLITS = 5
-SEED = 2025
-N_JOBS = -1
+N_REPEATS = int(os.environ.get("N_REPEATS", 500))
+N_SPLITS  = int(os.environ.get("N_SPLITS",  5))
+SEED      = int(os.environ.get("SEED",      2025))
+N_JOBS    = int(os.environ.get("N_JOBS",    -1))
 
 # Sex mapping
 SEX_MAP = {"Male": 0.0, "Female": 1.0}
@@ -58,10 +58,10 @@ EXPOSOME_GROUPS = OrderedDict({
     "Air Pollution": OrderedDict({
         "PM2.5": "PM2.5_interpolated",
         "Nitrogen oxides (NOx)": "Nitrogen oxide (NOx)_interpolated",
-        "Sulfur dioxide (SO2)": "Sulphur dioxide (SO2) emissions_interpolated",
+        "Sulfur dioxide (SO2)": "Sulphur dioxide (SO₂) emissions_interpolated",
         "Carbon monoxide (CO)": "Carbon monoxide (CO) emissions_interpolated",
         "Black carbon (BC)": "Black carbon (BC) emissions_interpolated",
-        "Ammoniac Nitrogen (NH3)": "Ammonia (NH3) emissions_interpolated",
+        "Ammoniac Nitrogen (NH3)": "Ammonia (NH₃) emissions_interpolated",
         "Non-methane volatile organic compounds (NMVOC)": "Non-methane volatile organic compounds (NMVOC) emissions_interpolated",
     }),
     "Green space access": OrderedDict({
@@ -167,7 +167,10 @@ def load_base_data():
     print("\n  Building neural feature combinations...", flush=True)
     feature_map = pfe.make_feature_map(df_raw, prefixes=pfe.FEATURE_PREFIXES)
     all_combos = pfe.build_combinations(feature_map)
-    print(f"  Created {len(all_combos)} feature combinations", flush=True)
+    _max_combos_env = os.environ.get("MAX_COMBOS", "").strip()
+    max_combos = int(_max_combos_env) if _max_combos_env else len(all_combos)
+    all_combos = all_combos[:max_combos]
+    print(f"  Created {len(all_combos)} feature combinations (MAX_COMBOS={max_combos})", flush=True)
 
     all_neural_cols = sorted({col for cols in feature_map.values() for col in cols})
 
@@ -637,7 +640,7 @@ def run_exposome(df_base, all_combos, all_neural_cols):
 
             h2_per_repeat = (
                 score_df.groupby("repeat", group_keys=False)
-                .apply(pfe._compute_h2_from_scores, include_groups=False)
+                .apply(pfe._compute_h2_from_scores)
                 .values
             )
 
