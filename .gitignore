@@ -17,7 +17,6 @@ data/derived/**/raw/
 analysis/figures/
 analysis/tables/
 analysis/results/*
-notebooks/
 figures/
 tables_for_paper/
 data/derived/*.backup.csv
