@@ -13,7 +13,10 @@ import sys
 import time
 from pathlib import Path
 from collections import OrderedDict
+from typing import Optional
 import os
+import argparse
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -674,11 +677,239 @@ def run_exposome(df_base, all_combos, all_neural_cols):
         combined_summary.to_csv(results_dir / "all_combos_summary.csv", index=False)
 
 
+DEFAULT_TABLES_DIR = REPO_ROOT / "analysis" / "tables"
+
+
+def _safe_output_dir(output_dir: Optional[Path]) -> Path:
+    if output_dir is None:
+        output_dir = DEFAULT_TABLES_DIR
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for fname in [
+        "pcev_phenotypes_best_vs_all.csv",
+        "pcev_expotypes_best_vs_all.csv",
+    ]:
+        if (output_dir / fname).exists():
+            raise FileExistsError(
+                f"Output file {(output_dir / fname)} already exists. "
+                "Use --tables_dir to write to a different directory or remove the existing files."
+            )
+
+    return output_dir
+
+
+def _choose_best_combo_from_summary(summary_path: Path, metric_prefix: str) -> str:
+    summary_df = pd.read_csv(summary_path)
+    non_all = summary_df[summary_df["combo_label"] != "all_features"].copy()
+    if non_all.empty:
+        raise ValueError(f"No non-all_features combos found in {summary_path}")
+    best_row = non_all.sort_values(f"{metric_prefix}_mean", ascending=False).iloc[0]
+    return str(best_row["combo_label"])
+
+
+def paired_sign_flip_test(data_all: np.ndarray, data_best: np.ndarray, n_perm: int = 10000, statistic: str = "mean") -> tuple[float, float]:
+    diff = np.asarray(data_all) - np.asarray(data_best)
+    if statistic == "mean":
+        obs_stat = np.mean(diff)
+    elif statistic == "median":
+        obs_stat = np.median(diff)
+    else:
+        raise ValueError("statistic must be 'mean' or 'median'")
+
+    signs = np.random.choice([-1, 1], size=(n_perm, len(diff)))
+    if statistic == "mean":
+        perm_stats = np.mean(signs * diff, axis=1)
+    else:
+        perm_stats = np.median(signs * diff, axis=1)
+
+    p_val = np.mean(np.abs(perm_stats) >= np.abs(obs_stat))
+    return float(obs_stat), float(p_val)
+
+
+def bootstrap_ci(data: np.ndarray, n_boot: int = 10000, statistic: str = "mean") -> tuple[float, float]:
+    data = np.asarray(data)
+    indices = np.random.randint(0, len(data), size=(n_boot, len(data)))
+    samples = data[indices]
+    if statistic == "mean":
+        boot_stats = np.mean(samples, axis=1)
+    elif statistic == "median":
+        boot_stats = np.median(samples, axis=1)
+    else:
+        raise ValueError("statistic must be 'mean' or 'median'")
+    return float(np.percentile(boot_stats, 2.5)), float(np.percentile(boot_stats, 97.5))
+
+
+def get_simple_stats(data: np.ndarray) -> tuple[float, float, int]:
+    data = np.asarray(data)
+    return float(np.mean(data)), float(np.std(data, ddof=1)), int(len(data))
+
+
+def _write_phenotype_best_table(output_dir: Path) -> Path:
+    age_dir = RESULTS_BASE / "age_odq_only_no_scanner"
+    sex_dir = RESULTS_BASE / "sex_odq_only_no_scanner"
+    diag_dir = RESULTS_BASE / "diagnosis_odq_only_no_scanner"
+
+    if not age_dir.exists() or not sex_dir.exists() or not diag_dir.exists():
+        raise FileNotFoundError("Expected PCEV result directories under RESULTS_BASE were not found.")
+
+    age_best_combo = _choose_best_combo_from_summary(age_dir / "all_combos_summary.csv", "h2_with")
+    sex_best_combo = _choose_best_combo_from_summary(sex_dir / "all_combos_summary.csv", "h2_with")
+    diag_best_combo = _choose_best_combo_from_summary(diag_dir / "all_combos_summary.csv", "h2_with")
+
+    age_best_h2 = pd.read_csv(age_dir / f"{age_best_combo.replace('+', '_')}_h2_per_repeat.csv")
+    age_all_h2 = pd.read_csv(age_dir / "all_features_h2_per_repeat.csv")
+
+    sex_best_metrics = pd.read_csv(sex_dir / f"{sex_best_combo.replace('+', '_')}_metrics_per_repeat.csv")
+    sex_all_metrics = pd.read_csv(sex_dir / "all_features_metrics_per_repeat.csv")
+
+    diag_best_metrics = pd.read_csv(diag_dir / f"{diag_best_combo.replace('+', '_')}_metrics_per_repeat.csv")
+    diag_all_metrics = pd.read_csv(diag_dir / "all_features_metrics_per_repeat.csv")
+
+    results_list = [
+        {
+            "Phenotype": "Age",
+            "Metric": "h²",
+            "Best Data": age_best_h2["h2_with"].values,
+            "All Data": age_all_h2["h2_with"].values,
+            "Best Label": age_best_combo,
+        },
+        {
+            "Phenotype": "Sex",
+            "Metric": "|Cohen's d|",
+            "Best Data": np.abs(sex_best_metrics["cohens_d_with"].values),
+            "All Data": np.abs(sex_all_metrics["cohens_d_with"].values),
+            "Best Label": sex_best_combo,
+        },
+        {
+            "Phenotype": "Sex",
+            "Metric": "h²",
+            "Best Data": sex_best_metrics["h2_with"].values,
+            "All Data": sex_all_metrics["h2_with"].values,
+            "Best Label": sex_best_combo,
+        },
+        {
+            "Phenotype": "Diagnosis",
+            "Metric": "ε²",
+            "Best Data": diag_best_metrics["epsilon_with"].values,
+            "All Data": diag_all_metrics["epsilon_with"].values,
+            "Best Label": diag_best_combo,
+        },
+        {
+            "Phenotype": "Diagnosis",
+            "Metric": "h²",
+            "Best Data": diag_best_metrics["h2_with"].values,
+            "All Data": diag_all_metrics["h2_with"].values,
+            "Best Label": diag_best_combo,
+        },
+    ]
+
+    output_rows = []
+    for target in results_list:
+        best_mean, best_std, n = get_simple_stats(target["Best Data"])
+        all_mean, all_std, _ = get_simple_stats(target["All Data"])
+        obs_stat, pval = paired_sign_flip_test(target["All Data"], target["Best Data"])
+        diffs = np.asarray(target["All Data"]) - np.asarray(target["Best Data"])
+        ci_lower, ci_upper = bootstrap_ci(diffs)
+        output_rows.append({
+            "Phenotype": target["Phenotype"],
+            "Metric": target["Metric"],
+            "Best Subset": target["Best Label"],
+            "Best Mean (SD)": f"{best_mean:.6f} ({best_std:.6f})",
+            "All Features Mean (SD)": f"{all_mean:.6f} ({all_std:.6f})",
+            "N": n,
+            "Test": "Paired sign-flip permutation (repeat-level)",
+            "Δ (All - Best)": f"{obs_stat:.6f}",
+            "Δ 95% CI": f"[{ci_lower:.6f}, {ci_upper:.6f}]",
+            "P-value": "< 0.001" if pval < 0.001 else f"{pval:.4f}",
+        })
+
+    phenotype_path = output_dir / "pcev_phenotypes_best_vs_all.csv"
+    pd.DataFrame(output_rows).to_csv(phenotype_path, index=False)
+    return phenotype_path
+
+
+def safe_name(name: str) -> str:
+    return name.replace(' ', '_')
+
+
+def _write_exposome_best_table(output_dir: Path) -> Path:
+    output_rows = []
+    for expo_name in EXPOSOME_GROUPS:
+        if expo_name == "Democracy-Summary":
+            continue
+        expo_dir = RESULTS_BASE / "exposome_odq_only_no_scanner" / safe_name(expo_name)
+        summary_df = pd.read_csv(expo_dir / "all_combos_summary.csv")
+        non_all = summary_df[summary_df["combo_label"] != "all_features"].copy()
+        if non_all.empty:
+            raise ValueError(f"No non-all_features combos found for {expo_dir}")
+        best_row = non_all.sort_values("h2_with_mean", ascending=False).iloc[0]
+        best_combo = str(best_row["combo_label"])
+        best_safe = best_combo.replace("+", "_")
+
+        h2_best = pd.read_csv(expo_dir / f"{best_safe}_h2_per_repeat.csv")
+        h2_all = pd.read_csv(expo_dir / "all_features_h2_per_repeat.csv")
+
+        best_mean, best_std, n = get_simple_stats(h2_best["h2_with"].values)
+        all_mean, all_std, _ = get_simple_stats(h2_all["h2_with"].values)
+        obs_stat, pval = paired_sign_flip_test(h2_all["h2_with"].values, h2_best["h2_with"].values)
+        diffs = np.asarray(h2_all["h2_with"].values) - np.asarray(h2_best["h2_with"].values)
+        ci_lower, ci_upper = bootstrap_ci(diffs)
+
+        output_rows.append({
+            "Exposome": expo_name,
+            "Metric": "h²",
+            "Best Subset": best_combo,
+            "Best Mean (SD)": f"{best_mean:.6f} ({best_std:.6f})",
+            "All Features Mean (SD)": f"{all_mean:.6f} ({all_std:.6f})",
+            "N": n,
+            "Test": "Paired sign-flip permutation (repeat-level)",
+            "Δ (All - Best)": f"{obs_stat:.6f}",
+            "Δ 95% CI": f"[{ci_lower:.6f}, {ci_upper:.6f}]",
+            "P-value": "< 0.001" if pval < 0.001 else f"{pval:.4f}",
+        })
+
+    exposome_path = output_dir / "pcev_expotypes_best_vs_all.csv"
+    pd.DataFrame(output_rows).to_csv(exposome_path, index=False)
+    return exposome_path
+
+
+def write_best_vs_all_tables(output_dir: Optional[Path] = None) -> Path:
+    output_dir = _safe_output_dir(output_dir)
+    print(f"Producing best_vs_all tables in {output_dir}", flush=True)
+    _write_phenotype_best_table(output_dir)
+    _write_exposome_best_table(output_dir)
+    return output_dir
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run analysis_03 or only produce best_vs_all tables.")
+    parser.add_argument(
+        "--only_tables",
+        action="store_true",
+        help="Skip the full PCEV analysis and only produce the phenotype/exposome best_vs_all tables from existing results.",
+    )
+    parser.add_argument(
+        "--tables_dir",
+        type=Path,
+        default=DEFAULT_TABLES_DIR,
+        help="Directory where derived tables will be written. Defaults to analysis/tables.",
+    )
+    return parser.parse_args()
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
 
 def main():
+    args = parse_args()
+    if args.only_tables:
+        output_dir = write_best_vs_all_tables(args.tables_dir)
+        print("BEST TABLES GENERATED AT:", output_dir, flush=True)
+        return
+
     df_base, all_combos, all_neural_cols = load_base_data()
 
     run_age(df_base, all_combos, all_neural_cols)
@@ -686,9 +917,11 @@ def main():
     run_diagnosis(df_base, all_combos, all_neural_cols)
     run_exposome(df_base, all_combos, all_neural_cols)
 
+    output_dir = write_best_vs_all_tables(args.tables_dir)
     print("\n" + "=" * 80, flush=True)
     print("ALL ANALYSES COMPLETE", flush=True)
     print("=" * 80, flush=True)
+    print("BEST TABLES GENERATED AT:", output_dir, flush=True)
 
 
 if __name__ == "__main__":

@@ -207,6 +207,12 @@ Required PCEV utilities:
 5. LME analysis for expotypes  
    Location: `analysis/analysis_05_lme_expotypes.py`
 
+Recommended execution order:
+
+- Run `analysis/analysis_03_pcev_phenotype_expotype.py` first.
+- Then run `analysis/analysis_04_lme_phenotypes.py` and `analysis/analysis_05_lme_expotypes.py`.
+- Finally run the notebooks to generate figures, using the tables produced by the previous steps.
+
 ### Data
 
 The `data/` folder contains:
