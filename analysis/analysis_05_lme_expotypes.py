@@ -35,6 +35,7 @@ RESULTS_BASE = Path(os.environ.get(
 )) / 'exposome_odq_only_no_scanner'
 TABLE_DIR    = REPO_ROOT / 'analysis' / 'tables_for_paper'
 TABLE_DIR.mkdir(parents=True, exist_ok=True)
+EXPOSOME_BEST_TABLE = REPO_ROOT / 'analysis' / 'tables' / 'pcev_expotypes_best_vs_all.csv'
 
 ID_COL = 'N_MEGA'
 
@@ -148,6 +149,23 @@ def safe_name(name: str) -> str:
     return name.replace(' ', '_')
 
 
+EXPOSOME_BEST_SUMMARY = pd.read_csv(EXPOSOME_BEST_TABLE)
+
+
+def selected_combo_key_for_expo(expo_name: str) -> str:
+    row_df = EXPOSOME_BEST_SUMMARY[
+        (EXPOSOME_BEST_SUMMARY['Exposome'] == expo_name)
+        & (EXPOSOME_BEST_SUMMARY['Metric'] == 'h²')
+    ]
+    if row_df.empty:
+        raise ValueError(f'No h² best-subset row found for exposome={expo_name}')
+    row = row_df.iloc[0]
+    delta_all_minus_best = float(row['Δ (All - Best)'])
+    if delta_all_minus_best > 0:
+        return 'all_features'
+    return str(row['Best Subset']).replace('+', '_')
+
+
 # ---------------------------------------------------------------------------
 # Load main data
 # ---------------------------------------------------------------------------
@@ -222,11 +240,7 @@ for expo_name in exposomes_to_process:
         print(f'Skipping {expo_name}: directory not found')
         continue
 
-    summary_df = pd.read_csv(expo_dir / 'all_combos_summary.csv')
-    non_all = summary_df[summary_df['combo_label'] != 'all_features'].copy()
-    best_row = non_all.sort_values('h2_with_mean', ascending=False).iloc[0]
-    best_combo = best_row['combo_label']
-    best_safe  = best_combo.replace('+', '_')
+    best_safe = selected_combo_key_for_expo(expo_name)
 
     h2_best_df = pd.read_csv(expo_dir / f'{best_safe}_h2_per_repeat.csv')
     h2_all_df  = pd.read_csv(expo_dir / 'all_features_h2_per_repeat.csv')
@@ -245,7 +259,7 @@ for expo_name in exposomes_to_process:
 
     h2_results.append({
         'Exposome':          expo_name,
-        'Best_Combo':        best_combo,
+        'Best_Combo':        best_safe,
         'N_Repeats':         len(x),
         'Best_Mean':         np.mean(x),
         'Best_SD':           np.std(x, ddof=1),
@@ -321,21 +335,8 @@ for expo_name in exposomes_to_process:
         continue
 
     try:
-        summary_df = pd.read_csv(expo_dir / 'all_combos_summary.csv')
-        non_all = summary_df[summary_df['combo_label'] != 'all_features'].copy()
-        best_combo_row = non_all.sort_values('h2_with_mean', ascending=False).iloc[0]
-        h2_best_combo  = best_combo_row['h2_with_mean']
-        all_feat_row   = summary_df[summary_df['combo_label'] == 'all_features'].iloc[0]
-        h2_all_feat    = all_feat_row['h2_with_mean']
-
-        if h2_best_combo >= h2_all_feat:
-            winning_label = best_combo_row['combo_label']
-            winning_safe  = winning_label.replace('+', '_')
-            model_type    = 'Best Combo'
-        else:
-            winning_label = 'all_features'
-            winning_safe  = 'all_features'
-            model_type    = 'All Features'
+        winning_safe  = selected_combo_key_for_expo(expo_name)
+        model_type    = 'Best Combo'
 
         scores = pd.read_csv(expo_dir / f'{winning_safe}_subject_scores.csv')
         scores['subject_id'] = scores['subject_id'].astype(str).str.strip()

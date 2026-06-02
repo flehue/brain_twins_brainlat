@@ -30,6 +30,7 @@ RESULTS_BASE = Path(os.environ.get('PCEV_RESULTS_DIR',
                     REPO_ROOT / 'analysis' / 'results' / 'pcev_results'))
 TABLE_DIR   = REPO_ROOT / 'analysis' / 'tables_for_paper'
 TABLE_DIR.mkdir(parents=True, exist_ok=True)
+PHENOTYPE_BEST_TABLE = REPO_ROOT / 'analysis' / 'tables' / 'pcev_phenotypes_best_vs_all.csv'
 
 AXIS_DIRS = {
     'age':       RESULTS_BASE / 'age_odq_only_no_scanner',
@@ -54,19 +55,36 @@ MIN_COUNTRY_SIZE = 1
 SEX_NORMALISE_MAP = {'M': 'M', 'MALE': 'M', 'F': 'F', 'FEMALE': 'F'}
 
 # ---------------------------------------------------------------------------
-# 1. Discover best combos per axis from all_combos_summary.csv
+# 1. Discover best combos per axis from the analysis_03 summary table
 # ---------------------------------------------------------------------------
 
+PHENOTYPE_BEST_SUMMARY = pd.read_csv(PHENOTYPE_BEST_TABLE)
+
+
+def selected_combo_key_for_axis(axis: str) -> str:
+    phenotype_name = {
+        'age': 'Age',
+        'sex': 'Sex',
+        'diagnosis': 'Diagnosis',
+    }[axis]
+    row_df = PHENOTYPE_BEST_SUMMARY[
+        (PHENOTYPE_BEST_SUMMARY['Phenotype'] == phenotype_name)
+        & (PHENOTYPE_BEST_SUMMARY['Metric'] == 'h²')
+    ]
+    if row_df.empty:
+        raise ValueError(f'No h² best-subset row found for axis={axis}')
+    row = row_df.iloc[0]
+    delta_all_minus_best = float(row['Δ (All - Best)'])
+    if delta_all_minus_best > 0:
+        return 'all_features'
+    return str(row['Best Subset']).replace('+', '_')
+
+
 ANALYSIS_COMBOS: Dict[str, Dict[str, str]] = {}
-for axis, axis_dir in AXIS_DIRS.items():
-    summary = pd.read_csv(axis_dir / 'all_combos_summary.csv')
-    non_all = summary[summary['combo_label'] != 'all_features'].copy()
-    best_label = non_all.sort_values('h2_with_mean', ascending=False).iloc[0]['combo_label']
-    # convert '+' separator to '_' to match score filenames
-    best_file_key = best_label.replace('+', '_')
+for axis in AXIS_DIRS:
     ANALYSIS_COMBOS[axis] = {
         'all_features': 'all_features',
-        'best_combo':   best_file_key,
+        'best_combo':   selected_combo_key_for_axis(axis),
     }
 
 print('Analysis combos:')
